@@ -1,0 +1,28 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+# 优先加载共享库导出集（SpDiagTargets.cmake），仅在其不存在时回退到静态导出集。
+# 避免两个导出集同时存在时因重复定义 spdiag_logger 等目标而冲突。
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/SpDiagTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/SpDiagTargets.cmake")
+elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/SpDiagStaticTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/SpDiagStaticTargets.cmake")
+endif()
+
+# 仅安装了静态 SDK 时，为 spdiag_lib 创建指向 spdiag_static 的别名，
+# 以兼容源代码构建中使用的 SpDiag::spdiag_lib 目标名。
+if(TARGET SpDiag::spdiag_static AND NOT TARGET SpDiag::spdiag_lib)
+    add_library(SpDiag::spdiag_lib INTERFACE IMPORTED)
+    set_property(TARGET SpDiag::spdiag_lib PROPERTY
+        INTERFACE_LINK_LIBRARIES SpDiag::spdiag_static)
+endif()
+
+if(NOT TARGET SpDiag::spdiag_lib AND NOT TARGET SpDiag::spdiag_static)
+    set(SpDiag_FOUND FALSE)
+    set(SpDiag_NOT_FOUND_MESSAGE
+        "SpDiag was found, but neither the shared nor static SDK target is installed")
+endif()
+
+check_required_components(SpDiag)

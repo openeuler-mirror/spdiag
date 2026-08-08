@@ -1,0 +1,12 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
+ * 自动生成文件，由 CMake 在 configure 时填充。不要手工编辑。
+ *
+ * 用于运行时区分二进制来自哪个 commit，验证脚本据此判断 ctest 跑的
+ * 是不是当前源码编译的 spdiag。
+ */
+#pragma once
+
+#define SPDIAG_BUILD_GIT_SHA      "@SPDIAG_GIT_SHA@@SPDIAG_GIT_DIRTY@"
+#define SPDIAG_BUILD_TIMESTAMP    "@SPDIAG_BUILD_TIMESTAMP@"
+#define SPDIAG_BUILD_ARCH         "@CMAKE_SYSTEM_PROCESSOR@"
