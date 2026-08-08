@@ -531,9 +531,9 @@ spdiag stop
 输出格式（`|` 分隔，左对齐）：
 
 ```
-Datetime                         | PID   | TID     | CPU   | Level | Program        | Module.Point                  | Cost(ns)  
+Datetime                         | PID   | TID     | CPU   | Level | Program        | Module.Point                  | Cost(ns)
 -------------------------------------------------------------------------------------------------------------------------
-2026-06-10 14:32:01.123456789    | 12345 | 12345   | 3     | 1     | my_app         | Compute.MatMul                | 150       
+2026-06-10 14:32:01.123456789    | 12345 | 12345   | 3     | 1     | my_app         | Compute.MatMul                | 150
 ```
 
 | 列 | 含义 |

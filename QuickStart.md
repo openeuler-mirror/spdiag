@@ -330,10 +330,10 @@ spdiag watch --perflog            # 持续刷新（Ctrl+C 退出）
 输出示例（`|` 分隔，文本列左对齐、数值列右对齐）：
 
 ```
-Datetime                         | PID   | TID     | CPU   | Level | Program        | Module.Point                  | Cost(ns)  
+Datetime                         | PID   | TID     | CPU   | Level | Program        | Module.Point                  | Cost(ns)
 -------------------------------------------------------------------------------------------------------------------------
-2026-06-10 14:32:01.123456789    | 12345 | 12345   | 3     | 1     | my_demo        | SDK.func_entry                | 150       
-2026-06-10 14:32:01.234567890    | 12345 | 12346   | 1     | 2     | my_demo        | SDK.other_point               | 2300      
+2026-06-10 14:32:01.123456789    | 12345 | 12345   | 3     | 1     | my_demo        | SDK.func_entry                | 150
+2026-06-10 14:32:01.234567890    | 12345 | 12346   | 1     | 2     | my_demo        | SDK.other_point               | 2300
 ```
 
 | 列 | 含义 |

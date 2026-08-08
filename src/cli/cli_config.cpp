@@ -220,7 +220,7 @@ bool ParseUint8Value(const std::string& text, uint8_t& out, std::string& error) 
         value = std::stoi(text, &parsed);
     } catch (const std::exception& e) {
         error = "not a valid integer: '" + text + "'";
-        SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "ParseUint8Value failed: %s, input: '%s', exception: %s", 
+        SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "ParseUint8Value failed: %s, input: '%s', exception: %s",
                          error.c_str(), text.c_str(), e.what());
         return false;
     }
@@ -251,7 +251,7 @@ bool ParseInt32Value(const std::string& text, int32_t& out, std::string& error) 
         value = std::stol(text, &parsed);
     } catch (const std::exception& e) {
         error = "not a valid integer: '" + text + "'";
-        SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "ParseInt32Value failed: %s, input: '%s', exception: %s", 
+        SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "ParseInt32Value failed: %s, input: '%s', exception: %s",
                          error.c_str(), text.c_str(), e.what());
         return false;
     }
@@ -575,7 +575,7 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
                 }
                 cfg.historySize = hs;
             } catch (const std::exception& e) {
-                SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "Parse --history-size failed: '%s', exception: %s", 
+                SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "Parse --history-size failed: '%s', exception: %s",
                                  hsArg.c_str(), e.what());
                 return MakeError("Invalid value for --history-size: '" + hsArg + "' is not a valid number");
             }
@@ -627,7 +627,7 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
                     cfg.coreEnd = cfg.coreStart;
                 }
             } catch (const std::exception& e) {
-                SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "Parse --core failed: '%s', exception: %s", 
+                SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "Parse --core failed: '%s', exception: %s",
                                  coreArg.c_str(), e.what());
                 return MakeError("Invalid value for --core: '" + coreArg + "' is not a valid integer");
             }
@@ -690,7 +690,7 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
                 cfg.obIntervalMs = interval;
                 cfg.SetFlag(UserFlag::INTERVAL);
             } catch (const std::exception& e) {
-                SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "Parse --interval failed: '%s', exception: %s", 
+                SPDIAG_LOG_ERROR(SpDiag::LogModule::CLI, "Parse --interval failed: '%s', exception: %s",
                                  intervalArg.c_str(), e.what());
                 return MakeError("Invalid value for --interval: '" + intervalArg + "' is not a valid number");
             }
