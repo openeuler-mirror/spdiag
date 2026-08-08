@@ -94,7 +94,7 @@ uint32_t CountCpuSet(const std::string& cpuset) {
                 }
             }
         } catch (const std::exception& e) {
-            SPDIAG_LOG_ERROR(LogModule::MANAGER, "Parse cpu list failed: '%s', exception: %s",
+            SPDIAG_LOG_ERROR(LogModule::MANAGER, "Parse cpu list failed: '%s', exception: %s", 
                              token.c_str(), e.what());
             return 0;
         }
@@ -115,7 +115,7 @@ uint32_t ReadCgroupCpuQuotaCores() {
                 uint64_t quota = std::stoull(quotaText);
                 return static_cast<uint32_t>(std::max<uint64_t>(1, (quota + period - 1) / period));
             } catch (const std::exception& e) {
-                SPDIAG_LOG_ERROR(LogModule::MANAGER, "Parse cpu.max failed: '%s', exception: %s",
+                SPDIAG_LOG_ERROR(LogModule::MANAGER, "Parse cpu.max failed: '%s', exception: %s", 
                                  quotaText.c_str(), e.what());
             }
         }
@@ -133,7 +133,7 @@ uint32_t ReadCgroupCpuQuotaCores() {
                 return static_cast<uint32_t>(std::max<uint64_t>(1, (quotaUnsigned + period - 1) / period));
             }
         } catch (const std::exception& e) {
-            SPDIAG_LOG_ERROR(LogModule::MANAGER, "Parse cpu.cfs_quota_us/cpu.cfs_period_us failed: quota='%s', period='%s', exception: %s",
+            SPDIAG_LOG_ERROR(LogModule::MANAGER, "Parse cpu.cfs_quota_us/cpu.cfs_period_us failed: quota='%s', period='%s', exception: %s", 
                              quotaLine.c_str(), periodLine.c_str(), e.what());
         }
     }
