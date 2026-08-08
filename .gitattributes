@@ -1,0 +1,40 @@
+# 强制文本文件行尾规则，避免 core.autocrlf 在 Windows/Linux 间造成 CRLF/LF 混乱
+# 跨平台项目的标准实践：以 .gitattributes 为权威，不依赖客户端 core.autocrlf 配置
+
+# Shell 脚本必须 LF（CRLF 会导致 Linux 上 #!/usr/bin/env bash\r 解析失败）
+*.sh           text eol=lf
+
+# CMake 文件必须 LF
+*.cmake        text eol=lf
+CMakeLists.txt text eol=lf
+
+# 源代码统一 LF
+*.cpp          text eol=lf
+*.h            text eol=lf
+*.hpp          text eol=lf
+*.c            text eol=lf
+*.cc           text eol=lf
+
+# 构建脚本必须 LF
+*.bpf.c        text eol=lf
+build.sh       text eol=lf
+
+# 配置与依赖描述
+*.spec         text eol=lf
+*.json         text eol=lf
+*.yaml         text eol=lf
+*.yml          text eol=lf
+*.toml         text eol=lf
+
+# Markdown 文档统一 LF
+*.md           text eol=lf
+
+# 二进制文件不转换
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.pdf          binary
+*.xlsx         binary
+*.tar.gz       binary
+*.patch        binary
