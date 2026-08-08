@@ -1,0 +1,66 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+output/
+
+# RPM packaging artifacts
+*.rpm
+*.tar.gz
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+CTestTestfile.cmake
+compile_commands.json
+CMakeConfigureLog.yaml
+
+# Compiled files
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.trae/
+CLAUDE.md
+
+# Platform specific
+*.exp
+*.pdb
+*.ilk
+
+# Test outputs
+Testing/
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+core
+core.*
+
+# Build logs
+build_log.txt
+compile_flags.txt
+
+# Vendor dependencies (if not using submodules)
+vendor/
+
+# CMake presets
+CMakePresets.json
+CMakeUserPresets.json
+
