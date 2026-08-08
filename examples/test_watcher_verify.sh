@@ -73,8 +73,8 @@ echo_md_header() {
     echo -n "$(date)" >> "$REPORT_FILE"
     cat >> "$REPORT_FILE" << 'MDHEAD'
 
-**环境**：openEuler 24.03 aarch64, GCC 12.3.1
-**分支**：`feat/shm-probe-watcher`
+**环境**：openEuler 24.03 aarch64, GCC 12.3.1  
+**分支**：`feat/shm-probe-watcher`  
 **被测组件**：`PerfManager::EnsureInitialized()` / `StartShmWatcher()` / `Shutdown()`
 
 ---
