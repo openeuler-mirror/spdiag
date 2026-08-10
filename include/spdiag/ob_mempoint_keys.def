@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
+ * SpDiag is licensed under Mulan PSL v2.
+ * You can use this software according to the terms and conditions of the Mulan PSL v2.
+ * You may obtain a copy of Mulan PSL v2 at:
+ *         http://license.coscl.org.cn/MulanPSL2
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PSL v2 for more details.
+ */
+
+MEM_KEY_DEF(RPC_REQUEST_BUF,   "Rpc",        "Stack_value")
+MEM_KEY_DEF(RPC_RESPONSE_BUF,  "Rpc",        "Raw_buffer")
+MEM_KEY_DEF(SQL_PLAN_CACHE,    "Sql",        "Tracked_vector")
+MEM_KEY_DEF(SQL_RESULT_SET,    "Sql",        "Struct_member")
+MEM_KEY_DEF(SESSION_CONN_CTX,  "Connection", "Tracked_hashmap")
+MEM_KEY_DEF(TX_UNDO_BUFFER,    "Transaction","Leak")
+MEM_KEY_DEF(LOG_WRITE_BUFFER,  "Log",        "Tracked_string")
+MEM_KEY_DEF(TX_EXEC_CTX,       "Execution",  "Heap_object")
+MEM_KEY_DEF(NET_SEND_BUF,      "Net",        "Object_pool")
+MEM_KEY_DEF(ASYNC_TASK_CTX,    "Async",      "Custom_lifecycle")
+MEM_KEY_DEF(SQL_VECTOR_GROW,   "Sql",        "Vector_growth")
+MEM_KEY_DEF(LOG_STRING_SSO,    "Log",        "String_sso")
+MEM_KEY_DEF(CONN_MAP_CHURN,    "Connection", "Map_churn")
+MEM_KEY_DEF(RPC_SPIKE,         "Rpc",        "Spike")
+MEM_KEY_DEF(SQL_NESTED_VEC,    "Sql",        "Nested_vec")
+MEM_KEY_DEF(SQL_NESTED_STR,    "Sql",        "Nested_str")
+MEM_KEY_DEF(SQL_REALLOC,       "Sql",        "Realloc_cascade")

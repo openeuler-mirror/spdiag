@@ -1,0 +1,24 @@
+[shm]
+name = /spdiag_shm_default
+
+[general]
+version = 1
+
+# Data directory for persistent files (history.bin, aggr.bin, snapshot.bin)
+data_dir = /tmp/spdiag_data
+
+# History ring buffer capacity
+history_size = 30
+
+# Dump interval in milliseconds (0 means use 1000ms)
+dump_interval_ms = 0
+
+# Performance level gate (0-4, 0 means auto-select based on mode)
+level_gate = 0
+
+# Number of cores (0 means auto-detect)
+num_cores = 0
+
+[perf]
+maxSlots = 192
+maxPrograms = 1
