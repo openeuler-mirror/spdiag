@@ -106,6 +106,7 @@ bool PointMemProfiler::Attach(struct bpf_object* obj, pid_t pid,
     };
 
     struct bpf_link** links[] = { &enterLink_, &leaveLink_, &resizeLink_, &structSnapshotLink_ };
+    int attachedCount = 0;
 
     for (int i = 0; i < 4; ++i) {
         struct bpf_program* prog = bpf_object__find_program_by_name(obj, progNames[i]);
@@ -125,10 +126,16 @@ bool PointMemProfiler::Attach(struct bpf_object* obj, pid_t pid,
         if (!link) {
             std::cerr << "mempoint: USDT attach failed for " << progNames[i]
                       << ": " << std::strerror(errno) << std::endl;
-            Detach();
-            return false;
+            continue;
         }
         *(links[i]) = link;
+        ++attachedCount;
+    }
+
+    if (attachedCount == 0) {
+        std::cerr << "mempoint: no USDT probes were attached" << std::endl;
+        Detach();
+        return false;
     }
 
     // Get map FDs

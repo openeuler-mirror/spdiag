@@ -402,7 +402,7 @@ fi
 if ! has_command "mempoint"; then
     optional_unavailable "mempoint" "binary was built without the mempoint command"
 elif [[ -x "$MEMPOINT_DEMO" ]]; then
-    "$MEMPOINT_DEMO" --mode object_pool --count 1000 --loop --interval 100 \
+    "$MEMPOINT_DEMO" --mode tracked_vector --count 1000 --loop --interval 100 \
         >"$RUN_ROOT/mempoint_demo.log" 2>&1 &
     MEMPOINT_PID=$!
     sleep 2
