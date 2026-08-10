@@ -59,10 +59,13 @@ foreach(TEST_FILE ${TEST_SOURCES})
         spdiag_lib spdiag_runtime_lib spdiag_manager_lib ${SPDIAG_GTEST_TARGETS})
 
     if(TEST_NAME STREQUAL "test_logger" OR TEST_NAME STREQUAL "test_signal_watcher")
-        # spdiag_lib 已 PUBLIC 链接 spdiag_logger，无需重复链接。
         # 设置 SPDIAG_LOG_LEVEL=0 以放开日志级别过滤，确保测试中所有级别
         # 的日志消息（包括 DEBUG/INFO/WARN/ERROR）都能到达 CollectingSink。
         target_compile_definitions(${TEST_NAME} PRIVATE SPDIAG_LOG_LEVEL=0)
+    endif()
+
+    if(TEST_NAME STREQUAL "test_signal_watcher")
+        target_link_libraries(${TEST_NAME} PRIVATE spdiag_logger)
     endif()
 
     if(TEST_NAME STREQUAL "test_cli_config")
