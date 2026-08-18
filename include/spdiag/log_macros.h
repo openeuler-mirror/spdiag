@@ -20,32 +20,30 @@
 #define SPDIAG_LOG_LEVEL_WARN  2
 #define SPDIAG_LOG_LEVEL_ERROR 3
 
+// 编译时不过滤，所有级别日志均编译进二进制。
+// 运行时通过 LoggerCore::SetRuntimeLogLevel() 动态控制日志输出级别。
 #define SPDIAG_LOG(level, module, fmt, ...) \
     do { \
-        if (SPDIAG_LOG_LEVEL <= level) { \
-            SpDiag::LoggerCore::GetInstance().Log( \
-                static_cast<SpDiag::LogLevel>(level), \
-                static_cast<SpDiag::LogModule>(module), \
-                fmt, \
-                __FILE__, \
-                __LINE__, \
-                __FUNCTION__, \
-                ##__VA_ARGS__); \
-        } \
+        SpDiag::LoggerCore::GetInstance().Log( \
+            static_cast<SpDiag::LogLevel>(level), \
+            static_cast<SpDiag::LogModule>(module), \
+            fmt, \
+            __FILE__, \
+            __LINE__, \
+            __FUNCTION__, \
+            ##__VA_ARGS__); \
     } while(0)
 
 #define SPDIAG_LOG_WITH_STACK(level, module, fmt, ...) \
     do { \
-        if (SPDIAG_LOG_LEVEL <= level) { \
-            SpDiag::LoggerCore::GetInstance().LogWithStack( \
-                static_cast<SpDiag::LogLevel>(level), \
-                static_cast<SpDiag::LogModule>(module), \
-                fmt, \
-                __FILE__, \
-                __LINE__, \
-                __FUNCTION__, \
-                ##__VA_ARGS__); \
-        } \
+        SpDiag::LoggerCore::GetInstance().LogWithStack( \
+            static_cast<SpDiag::LogLevel>(level), \
+            static_cast<SpDiag::LogModule>(module), \
+            fmt, \
+            __FILE__, \
+            __LINE__, \
+            __FUNCTION__, \
+            ##__VA_ARGS__); \
     } while(0)
 
 #define SPDIAG_LOG_DEBUG(module, fmt, ...) \

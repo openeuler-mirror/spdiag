@@ -99,6 +99,7 @@ struct CliConfig {
     std::string shmName         = "/spdiag_shm_default";
     uint32_t    expectedVersion = 1;
     std::string configPath;
+    std::string logLevelStr;        // --log-level 参数值 (DEBUG/INFO/WARN/ERROR)
 
     bool        showDetail      = false;
     int32_t     coreStart       = -1;

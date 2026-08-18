@@ -12,13 +12,15 @@
 
 #include "spdiag/logger.h"
 #include "spdiag/log_macros.h"
+#include "log_cli_args.h"
 
+#include <cstring>
 #include <iostream>
 #include <thread>
 #include <vector>
 #include <chrono>
 #include <atomic>
-#include <cstdlib>
+#include <random>
 
 using namespace SpDiag;
 
@@ -28,35 +30,38 @@ static void SimulateError() {
     SPDIAG_LOG_ERROR(LogModule::SDK, "Simulated error occurred, count: %d", ++error_count);
 }
 
-static void SimulateWarning() {
-    SPDIAG_LOG_WARN(LogModule::PERF_MANAGER, "Warning: resource usage high: %d%%", 
-                    static_cast<int>(rand() % 100));
+static void SimulateWarning(std::mt19937& rng) {
+    SPDIAG_LOG_WARN(LogModule::PERF_MANAGER, "Warning: resource usage high: %d%%",
+                    static_cast<int>(rng() % 100));
 }
 
-static void SimulateInfo() {
-    SPDIAG_LOG_INFO(LogModule::RUNTIME, "Processing task %d", rand() % 1000);
+static void SimulateInfo(std::mt19937& rng) {
+    SPDIAG_LOG_INFO(LogModule::RUNTIME, "Processing task %d", rng() % 1000);
 }
 
-static void SimulateDebug() {
-    SPDIAG_LOG_DEBUG(LogModule::MANAGER, "Debug: internal state value = %f", 
-                     static_cast<double>(rand()) / RAND_MAX);
+static void SimulateDebug(std::mt19937& rng) {
+    SPDIAG_LOG_DEBUG(LogModule::MANAGER, "Debug: internal state value = %f",
+                     static_cast<double>(rng()) / rng.max());
 }
 
 static void WorkerThread(int thread_id) {
     SPDIAG_LOG_INFO(LogModule::RUNTIME, "Worker thread %d started", thread_id);
-    
+
+    // 每线程独立随机数生成器，避免 rand() 的数据竞争
+    std::mt19937 rng(static_cast<unsigned>(thread_id));
+
     for (int i = 0; i < 5; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        
-        switch (rand() % 4) {
+
+        switch (rng() % 4) {
             case 0:
-                SimulateInfo();
+                SimulateInfo(rng);
                 break;
             case 1:
-                SimulateWarning();
+                SimulateWarning(rng);
                 break;
             case 2:
-                SimulateDebug();
+                SimulateDebug(rng);
                 break;
             case 3:
                 SimulateError();
@@ -148,13 +153,34 @@ static void TestHighVolumeLogging() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
-int main() {
-    std::srand(static_cast<unsigned int>(std::time(nullptr)));
-    
+int main(int argc, char* argv[]) {
+    LogLevel runtime_level;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "-h") == 0 ||
+            std::strcmp(argv[i], "--help") == 0) {
+            std::cout
+                << "Usage: logger_demo [options]\n\n"
+                << "Options:\n";
+            PrintLogLevelHelp();
+            std::cout
+                << "  -h                  Show this help message\n\n"
+                << "Examples:\n"
+                << "  logger_demo\n"
+                << "  logger_demo --log-level DEBUG\n"
+                << "  logger_demo --log-level=INFO\n";
+            return 0;
+        }
+    }
+
+    // 解析并设置运行时日志级别
+    ParseLogLevelArg(argc, argv, LogLevel::ERROR, runtime_level);
+    LoggerCore::GetInstance().SetRuntimeLogLevel(runtime_level);
+
     std::cout << "========================================" << std::endl;
     std::cout << "  SpDiag Logger Demo" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "Log Level: " << GetLogLevelName(static_cast<LogLevel>(SPDIAG_LOG_LEVEL)) << std::endl;
+    std::cout << "Log Level: " << GetLogLevelName(LoggerCore::GetInstance().GetRuntimeLogLevel()) << std::endl;
     std::cout << "Console Output: " << (SPDIAG_LOG_TO_CONSOLE ? "Enabled" : "Disabled") << std::endl;
     std::cout << "File Output: " << (SPDIAG_LOG_TO_FILE ? "Enabled" : "Disabled") << std::endl;
     

@@ -12,7 +12,10 @@ add_executable(demo_app
     demo_app.cpp
 )
 
-target_include_directories(demo_app PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_include_directories(demo_app PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/examples"
+)
 
 target_link_libraries(demo_app PRIVATE spdiag_lib)
 
@@ -168,10 +171,36 @@ add_executable(logger_demo
     logger_demo.cpp
 )
 
-target_include_directories(logger_demo PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_include_directories(logger_demo PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/examples"
+)
 
 target_link_libraries(logger_demo PRIVATE spdiag_lib)
 
 if(NOT WIN32)
     target_link_options(logger_demo PRIVATE -rdynamic)
+endif()
+
+# --- Async logger benchmark ---
+# 对比同步/异步模式下的吞吐和延迟，对应 docs/ASYNC_LOG_DESIGN.md 第 8 步
+add_executable(benchmark_async_logger
+    benchmark_async_logger.cpp
+)
+
+target_include_directories(benchmark_async_logger PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/examples"
+)
+
+target_link_libraries(benchmark_async_logger PRIVATE spdiag_lib spdiag_logger)
+
+target_compile_definitions(benchmark_async_logger PRIVATE
+    SPDIAG_ASYNC_QUEUE_SIZE=${SPDIAG_ASYNC_QUEUE_SIZE}
+    SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS=${SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS}
+)
+
+if(NOT WIN32)
+    target_link_options(benchmark_async_logger PRIVATE -rdynamic)
 endif()

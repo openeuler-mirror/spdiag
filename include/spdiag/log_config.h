@@ -12,10 +12,6 @@
 
 #pragma once
 
-#ifndef SPDIAG_LOG_LEVEL
-#define SPDIAG_LOG_LEVEL 3
-#endif
-
 #ifndef SPDIAG_LOG_TO_FILE
 #define SPDIAG_LOG_TO_FILE 0
 #endif
@@ -34,4 +30,16 @@
 
 #ifndef SPDIAG_LOG_MAX_FILES
 #define SPDIAG_LOG_MAX_FILES 5
+#endif
+
+#ifndef SPDIAG_ASYNC_QUEUE_SIZE
+#define SPDIAG_ASYNC_QUEUE_SIZE 8192
+#endif
+
+// 队列满时业务线程的最长等待时间（毫秒）。
+//   > 0 : 短暂等待后台线程消费，超时后丢弃；持续高压下会在该时长内阻塞业务线程。
+//   = 0 : 立即丢弃（非阻塞模式），完全避免日志路径反噬业务线程。
+// 注意：无论取何值，丢弃的日志均会计入 DroppedCount() 统计。
+#ifndef SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS
+#define SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS 1
 #endif

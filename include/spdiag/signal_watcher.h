@@ -81,6 +81,10 @@ private:
     std::thread signal_thread_;
     pthread_t signal_thread_handle_{};
     FlushCallback callback_;
+    // BlockAndStart 前保存的调用线程原始信号掩码，Stop() 时恢复，
+    // 避免进程在 Stop 后仍被屏蔽目标信号（如 SIGINT/SIGTERM 无法触发默认行为）。
+    sigset_t old_mask_{};
+    bool mask_saved_ = false;  // 是否成功保存了原始掩码
 };
 
 } // namespace SpDiag

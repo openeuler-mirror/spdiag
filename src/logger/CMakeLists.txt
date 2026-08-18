@@ -22,25 +22,34 @@ target_include_directories(spdiag_logger PUBLIC
 
 target_link_libraries(spdiag_logger PUBLIC Threads::Threads)
 
-# SPDIAG_LOG_LEVEL 用 PRIVATE：仅 spdiag_logger 自己编译时生效。
-# 其它 target 通过 include "spdiag/log_config.h" 的 #ifndef 守护拿到相同的默认值（3=ERROR），
-# 行为完全等价。改 PRIVATE 避免下游 target（如 test_logger）想覆盖级别时
-# 出现 -DSPDIAG_LOG_LEVEL 重定义冲突（cc1plus: "SPDIAG_LOG_LEVEL" redefined [-Werror]）。
-target_compile_definitions(spdiag_logger PRIVATE
-    SPDIAG_LOG_LEVEL=${SPDIAG_LOG_LEVEL_NUM}
-)
+# 以下编译定义均使用 PRIVATE：仅 spdiag_logger 自己编译时生效。
+# 其它 target 通过 include "spdiag/log_config.h" 的 #ifndef 守护拿到相同默认值，
+# 避免下游 target 想覆盖配置时出现宏重定义冲突。
 
 if(SPDIAG_LOG_TO_FILE)
-    target_compile_definitions(spdiag_logger PUBLIC
+    target_compile_definitions(spdiag_logger PRIVATE
         SPDIAG_LOG_TO_FILE=1
         SPDIAG_LOG_FILE_PATH="${SPDIAG_LOG_FILE_PATH}"
         SPDIAG_LOG_MAX_SIZE=${SPDIAG_LOG_MAX_SIZE}
         SPDIAG_LOG_MAX_FILES=${SPDIAG_LOG_MAX_FILES}
     )
+else()
+    target_compile_definitions(spdiag_logger PRIVATE
+        SPDIAG_LOG_TO_FILE=0
+    )
 endif()
 
 if(SPDIAG_LOG_TO_CONSOLE)
-    target_compile_definitions(spdiag_logger PUBLIC
+    target_compile_definitions(spdiag_logger PRIVATE
         SPDIAG_LOG_TO_CONSOLE=1
     )
+else()
+    target_compile_definitions(spdiag_logger PRIVATE
+        SPDIAG_LOG_TO_CONSOLE=0
+    )
 endif()
+
+target_compile_definitions(spdiag_logger PRIVATE
+    SPDIAG_ASYNC_QUEUE_SIZE=${SPDIAG_ASYNC_QUEUE_SIZE}
+    SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS=${SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS}
+)

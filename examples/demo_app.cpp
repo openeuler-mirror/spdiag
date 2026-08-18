@@ -11,6 +11,8 @@
  */
 
 #include "spdiag/perf.h"
+#include "spdiag/log_macros.h"
+#include "log_cli_args.h"
 
 #include <iostream>
 #include <thread>
@@ -39,7 +41,10 @@ static void SetAffinity(uint32_t core) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core, &cpuset);
-    sched_setaffinity(0, sizeof(cpuset), &cpuset);
+    if (sched_setaffinity(0, sizeof(cpuset), &cpuset) != 0) {
+        SPDIAG_LOG_WARN(SpDiag::LogModule::EXAMPLE,
+            "sched_setaffinity failed for core %u", core);
+    }
 }
 
 static void MatrixMultiply(int size) {
@@ -103,6 +108,8 @@ static void AllocDealloc() {
 }
 
 static void ThreadCacheStress(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadCacheStress started, core %u", core);
     SetAffinity(core);
     const size_t ARRAY_SIZE = 16 * 1024 * 1024;
     std::vector<uint64_t> data(ARRAY_SIZE);
@@ -129,9 +136,13 @@ static void ThreadCacheStress(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u CacheStress] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadCacheStress finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadMatMul(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadMatMul started, core %u", core);
     SetAffinity(core);
     srand(static_cast<unsigned>(core * 12345 + 67890));
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
@@ -143,11 +154,12 @@ static void ThreadMatMul(uint32_t core, int durationSec) {
             PerfPoint pt(PerfKeyDefined::COMPUTE_MATMUL, PerfLevel::KEY_MODULE);
             pt.Start();
             MatrixMultiply(32);
+            // 故意不调用 pt.End()：模拟 PerfPoint 未关闭场景，由 PerfPoint 框架自身记录异常
         } else if (r == 1) {
             PerfPoint pt(PerfKeyDefined::COMPUTE_MATMUL, PerfLevel::KEY_MODULE);
             pt.Start();
             MatrixMultiply(32);
-            pt.End(1);
+            pt.End(1);  // 错误码 1：由 PerfPoint 框架记录，无需额外日志
         } else {
             PerfPoint pt(PerfKeyDefined::COMPUTE_MATMUL, PerfLevel::KEY_MODULE);
             pt.Start();
@@ -159,9 +171,13 @@ static void ThreadMatMul(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u MatMul] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadMatMul finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadPrime(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadPrime started, core %u", core);
     SetAffinity(core);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     int iter = 0;
@@ -176,9 +192,13 @@ static void ThreadPrime(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u Prime] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadPrime finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadIO(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadIO started, core %u", core);
     SetAffinity(core);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     int iter = 0;
@@ -193,9 +213,13 @@ static void ThreadIO(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u IO] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadIO finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadProcess(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadProcess started, core %u", core);
     SetAffinity(core);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     int iter = 0;
@@ -212,9 +236,13 @@ static void ThreadProcess(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u Process] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadProcess finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadPipeline(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadPipeline started, core %u", core);
     SetAffinity(core);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     int iter = 0;
@@ -243,9 +271,13 @@ static void ThreadPipeline(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u Pipeline] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadPipeline finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadLowLevel(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadLowLevel started, core %u", core);
     SetAffinity(core);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     int iter = 0;
@@ -260,9 +292,13 @@ static void ThreadLowLevel(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u Scheduler] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadLowLevel finished, core %u, iterations=%d", core, iter);
 }
 
 static void ThreadAlloc(uint32_t core, int durationSec) {
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadAlloc started, core %u", core);
     SetAffinity(core);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     int iter = 0;
@@ -277,6 +313,8 @@ static void ThreadAlloc(uint32_t core, int durationSec) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "[Core %u Alloc] completed %d iterations\n", core, iter);
     SafePrint(buf);
+    SPDIAG_LOG_DEBUG(SpDiag::LogModule::EXAMPLE,
+        "ThreadAlloc finished, core %u, iterations=%d", core, iter);
 }
 
 int main(int argc, char* argv[]) {
@@ -286,17 +324,29 @@ int main(int argc, char* argv[]) {
         if (std::strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             durationSec = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
-            std::cout << "Usage: demo_app [-d duration_sec]\n"
-                      << "  -d  Duration in seconds (0 = infinite, default 5)\n";
+            std::cout << "Usage: demo_app [options]\n\n"
+                      << "Options:\n";
+            PrintLogLevelHelp();
+            std::cout << "  -d <sec>            Duration in seconds (0 = infinite, default 5)\n"
+                      << "  -h                  Show this help message\n";
             return 0;
         }
     }
 
+    // 解析并设置运行时日志级别（默认 ERROR，可通过 --log-level 覆盖）
+    LogLevel runtime_level;
+    ParseLogLevelArg(argc, argv, LogLevel::ERROR, runtime_level);
+    LoggerCore::GetInstance().SetRuntimeLogLevel(runtime_level);
+
     std::cout << "=== SpDiag Demo Application ===\n";
     std::cout << "  Duration: " << (durationSec > 0 ? std::to_string(durationSec) + "s" : "infinite") << "\n";
-    std::cout << "  PID: " << getpid() << "\n\n";
+    std::cout << "  PID: " << getpid() << "\n";
+    std::cout << "  Log Level: " << GetLogLevelName(LoggerCore::GetInstance().GetRuntimeLogLevel()) << "\n\n";
 
     InitPerf("demo_app");
+    SPDIAG_LOG_INFO(SpDiag::LogModule::EXAMPLE,
+        "demo_app started, pid=%d, duration=%ds, perf initialized",
+        getpid(), durationSec);
 
     std::vector<std::thread> workers;
     workers.reserve(9);
@@ -309,11 +359,15 @@ int main(int argc, char* argv[]) {
     workers.emplace_back(ThreadLowLevel,  6, durationSec > 0 ? durationSec : 86400);
     workers.emplace_back(ThreadAlloc,     0, durationSec > 0 ? durationSec : 86400);
     workers.emplace_back(ThreadCacheStress, 7, durationSec > 0 ? durationSec : 86400);
+    SPDIAG_LOG_INFO(SpDiag::LogModule::EXAMPLE,
+        "all %zu worker threads launched", workers.size());
 
     if (durationSec == 0) {
         std::cout << "Running indefinitely. Press Enter to stop...\n";
         std::cin.get();
         running.store(false, std::memory_order_relaxed);
+        SPDIAG_LOG_INFO(SpDiag::LogModule::EXAMPLE,
+            "stop signal received, shutting down workers");
     }
 
     for (auto& w : workers) {
@@ -321,6 +375,9 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "\nAll workers finished.\n";
+    SPDIAG_LOG_INFO(SpDiag::LogModule::EXAMPLE,
+        "all worker threads joined, flushing logs");
+    SPDIAG_SHUTDOWN_LOGS();
 
     return 0;
 }

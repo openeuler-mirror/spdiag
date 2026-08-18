@@ -32,23 +32,17 @@ if(SPDIAG_BUILD_SHARED)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
-set(SPDIAG_LOG_LEVEL "ERROR" CACHE STRING "Log level (DEBUG, INFO, WARN, ERROR)")
-set_property(CACHE SPDIAG_LOG_LEVEL PROPERTY STRINGS "DEBUG" "INFO" "WARN" "ERROR")
 option(SPDIAG_LOG_TO_FILE "Enable log to file" OFF)
 option(SPDIAG_LOG_TO_CONSOLE "Enable log to console" ON)
 set(SPDIAG_LOG_FILE_PATH "/var/log/spdiag/spdiag.log" CACHE STRING "Log file path")
 set(SPDIAG_LOG_MAX_SIZE "10485760" CACHE STRING "Max log file size in bytes")
 set(SPDIAG_LOG_MAX_FILES "5" CACHE STRING "Max number of backup log files")
-
-if(SPDIAG_LOG_LEVEL STREQUAL "DEBUG")
-    set(SPDIAG_LOG_LEVEL_NUM 0)
-elseif(SPDIAG_LOG_LEVEL STREQUAL "INFO")
-    set(SPDIAG_LOG_LEVEL_NUM 1)
-elseif(SPDIAG_LOG_LEVEL STREQUAL "WARN")
-    set(SPDIAG_LOG_LEVEL_NUM 2)
-else()
-    set(SPDIAG_LOG_LEVEL_NUM 3)
-endif()
+set(SPDIAG_ASYNC_QUEUE_SIZE "8192" CACHE STRING "Async log queue capacity")
+# 队列满时业务线程的最长等待时间（毫秒）：
+#   > 0 短暂等待后台消费；持续高压下会在业务线程延迟路径上叠加尖刺
+#   = 0 立即丢弃（非阻塞模式），完全避免日志路径反噬业务线程
+set(SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS "1" CACHE STRING
+    "Async log enqueue timeout on queue full (ms, 0 = non-blocking drop)")
 
 # ---------------------------------------------------------------------------
 # 构建身份信息：生成 _build_info.h，含 git HEAD SHA + 构建时间戳。
