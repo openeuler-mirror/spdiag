@@ -16,6 +16,7 @@
 #include "manager/manager.h"
 #include "runtime/plugins/custom_perfpoint/custom_perfpoint.h"
 #include "spdiag/log_macros.h"
+#include "spdiag/logger.h"
 #include "spdiag/signal_watcher.h"
 #ifdef SPDIAG_ENABLE_OB_MEMORY
 #include "runtime/plugins/memstat/memstat.h"
@@ -121,6 +122,19 @@ void RegisterPlugins(SpDiagManager& manager) {
 
 int main(int argc, char* argv[]) {
     auto config = Cli::CliConfig::ParseArgs(argc, argv);
+
+    // 设置运行时日志级别（如有指定 --log-level 参数）
+    if (!config.logLevelStr.empty()) {
+        auto level = SpDiag::ParseLogLevelName(config.logLevelStr);
+        if (level.has_value()) {
+            SpDiag::LoggerCore::GetInstance().SetRuntimeLogLevel(*level);
+        } else {
+            std::cerr << "Invalid --log-level value: '" << config.logLevelStr
+                      << "'. Valid options: DEBUG/INFO/WARN/ERROR. "
+                      << "Using default (ERROR).\n";
+        }
+    }
+
     SpDiagManager manager;
     RegisterPlugins(manager);
     DisplayEngine display;

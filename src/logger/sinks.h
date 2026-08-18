@@ -41,6 +41,9 @@ private:
     size_t max_size_;
     int max_files_;
     size_t current_size_;
+    // 写失败告警去重标记：磁盘持续故障时每个消息都会写失败，
+    // 只在首次失败时告警一次，磁盘恢复（写成功）后重置，避免刷屏。
+    bool write_error_reported_ = false;
 };
 
 } // namespace SpDiag

@@ -350,7 +350,7 @@ bool ParseLevelExpr(const std::string& levelArg, SpDiag::Cli::CliConfig& cfg, st
 struct GlobalScanResult {
     std::string configPath;
     bool helpRequested = false;
-    bool configError = false;
+    std::string error;
 };
 
 GlobalScanResult ScanGlobalOptions(int argc, char* argv[], CliConfig& cfg) {
@@ -365,11 +365,21 @@ GlobalScanResult ScanGlobalOptions(int argc, char* argv[], CliConfig& cfg) {
         }
         if (arg == "--config") {
             if (i + 1 >= argc) {
-                result.configError = true;
+                result.error = "Missing value for --config";
                 return result;
             }
             result.configPath = argv[++i];
             configPathExplicit = true;
+        }
+        // --log-level=VALUE 或 --log-level VALUE
+        if (arg == "--log-level") {
+            if (i + 1 >= argc) {
+                result.error = "Missing value for --log-level";
+                return result;
+            }
+            cfg.logLevelStr = argv[++i];
+        } else if (arg.rfind("--log-level=", 0) == 0) {
+            cfg.logLevelStr = arg.substr(12);
         }
     }
 
@@ -424,11 +434,13 @@ CommandCategory GetCategory(Command cmd) {
 
 static void PrintUsage() {
     std::cerr <<
-        "Usage: spdiag <command> [options]\n"
+        "Usage: spdiag [global-options] <command> [options]\n"
         "\n"
-        "Options:\n"
+        "Global Options:\n"
         "  -h, --help             Show this help message\n"
         "  --version              Show version\n"
+        "  --log-level LEVEL      Set runtime log level (DEBUG/INFO/WARN/ERROR)\n"
+        "                        Default: ERROR\n"
         "\n"
         "Commands:\n"
         "  start          Create shared memory for spdiag\n"
@@ -519,8 +531,8 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
         result.helpRequested = true;
         return result;
     }
-    if (global.configError) {
-        return MakeError("Missing value for --config");
+    if (!global.error.empty()) {
+        return MakeError(global.error);
     }
 
     bool commandSet = false;
@@ -536,6 +548,15 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
         } else if (arg == "--version") {
             result.versionRequested = true;
             return result;
+        } else if (arg == "--log-level") {
+            // Phase 1 (ScanGlobalOptions) 已读取该全局选项的值。
+            // Phase 2 仅负责消费 argv，避免落入 "Unknown argument" 分支。
+            if (i + 1 >= argc) {
+                return MakeError("Missing value for --log-level");
+            }
+            ++i;
+        } else if (arg.rfind("--log-level=", 0) == 0) {
+            // --log-level=VALUE 形式，Phase 1 已读取，Phase 2 跳过。
         } else if (arg == "--pid") {
             if (i + 1 >= argc) {
                 return MakeError("Invalid value for --pid: missing value");

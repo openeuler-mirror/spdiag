@@ -32,7 +32,6 @@ ENABLE_OB_MEMORY=true
 ENABLE_OB_CACHE=true
 DEBUG_FRAMES=false
 SHARED=false
-LOG_LEVEL="ERROR"
 LOG_TO_FILE=false
 LOG_TO_CONSOLE=true
 
@@ -62,7 +61,6 @@ Options:
   -f on|off      Enable frame resolution debug output (default: off)
 
 Logging Options:
-  -d LEVEL       Set log level (DEBUG, INFO, WARN, ERROR) [default: ERROR]
   -w on|off      Enable log to console [default: on]
   -W on|off      Enable log to file [default: off]
 
@@ -78,8 +76,6 @@ Examples:
   bash build.sh -p on             # Enable percentile calculation
   bash build.sh -s on             # Enable PerfLog timestamp logging
   bash build.sh -m on             # Enable MemPoint
-  bash build.sh -d DEBUG          # Enable DEBUG level logging
-  bash build.sh -d INFO -W on     # INFO level with file output
 EOF
     exit 0
 }
@@ -202,7 +198,6 @@ while [[ $# -gt 0 ]]; do
                 *)   echo "build.sh: -l expects 'on' or 'off', got '$2'"; exit 1 ;;
             esac ;;
         -g) GTEST_SRC="$2"; shift 2 ;;
-        -d) LOG_LEVEL="$2"; shift 2 ;;
         -w) case "$2" in
                 on)  LOG_TO_CONSOLE=true;  shift 2 ;;
                 off) LOG_TO_CONSOLE=false; shift 2 ;;
@@ -243,7 +238,6 @@ CMAKE_ARGS="$CMAKE_ARGS -DENABLE_OB_CACHE=$( [ "$ENABLE_OB_CACHE" = true ] && ec
 CMAKE_ARGS="$CMAKE_ARGS -DSPDIAG_DEBUG_FRAMES=$( [ "$DEBUG_FRAMES" = true ] && echo ON || echo OFF )"
 CMAKE_ARGS="$CMAKE_ARGS -DSPDIAG_BUILD_SHARED=$( [ "$SHARED" = true ] && echo ON || echo OFF )"
 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-CMAKE_ARGS="$CMAKE_ARGS -DSPDIAG_LOG_LEVEL=$LOG_LEVEL"
 CMAKE_ARGS="$CMAKE_ARGS -DSPDIAG_LOG_TO_CONSOLE=$( [ "$LOG_TO_CONSOLE" = true ] && echo ON || echo OFF )"
 CMAKE_ARGS="$CMAKE_ARGS -DSPDIAG_LOG_TO_FILE=$( [ "$LOG_TO_FILE" = true ] && echo ON || echo OFF )"
 
