@@ -369,8 +369,16 @@ TEST_F(LogLevelParamTest, FilteredMessagesAreCorrectLevel) {
     auto messages = collector_->GetMessages();
     ASSERT_EQ(messages.size(), 2u);
 
-    EXPECT_NE(messages[0].find("[WARN]"), std::string::npos);
-    EXPECT_NE(messages[1].find("[ERROR]"), std::string::npos);
+    // ERROR 走同步路径（点4）、WARN 走异步队列，输出顺序不保证与调用顺序一致，
+    // 因此按"内容集合"断言级别标签，不依赖跨级别顺序。
+    bool has_warn = false;
+    bool has_error = false;
+    for (const auto& msg : messages) {
+        has_warn = has_warn || msg.find("[WARN]") != std::string::npos;
+        has_error = has_error || msg.find("[ERROR]") != std::string::npos;
+    }
+    EXPECT_TRUE(has_warn);
+    EXPECT_TRUE(has_error);
 }
 
 // ========== 动态切换运行时级别 ==========

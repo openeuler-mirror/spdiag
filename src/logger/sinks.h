@@ -16,6 +16,7 @@
 
 #include <string>
 #include <fstream>
+#include <mutex>
 
 namespace SpDiag {
 
@@ -23,6 +24,10 @@ class ConsoleSink : public LogSink {
 public:
     void Write(const std::string& message) override;
     void Flush() override;
+
+private:
+    // ERROR 同步路径与后台 worker 线程可能并发写同一 sink，需互斥串行化。
+    std::mutex mutex_;
 };
 
 class FileSink : public LogSink {
@@ -34,8 +39,10 @@ public:
     void Flush() override;
 
 private:
+    // 仅由 Write（持锁）调用，不再单独加锁。
     void Rotate();
 
+    std::mutex mutex_;
     std::ofstream file_;
     std::string filename_;
     size_t max_size_;

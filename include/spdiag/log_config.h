@@ -43,3 +43,20 @@
 #ifndef SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS
 #define SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS 1
 #endif
+
+// ERROR 级别是否绕过异步队列、在调用线程直接同步写入 sinks。
+// = 1（默认）：ERROR 保证不因队列满被丢弃、调用返回前即可见，适用于关键错误审计。
+// = 0：回退到"全部异步"（ERROR 也可能在高压下被丢弃）。
+#ifndef SPDIAG_LOG_ERROR_SYNC
+#define SPDIAG_LOG_ERROR_SYNC 1
+#endif
+
+// ERROR 同步写入后是否调用 sink->Flush()。
+// 注意：这是"flush 到内核页缓存"（µs 级开销），不是 fsync 强制落盘。
+// = 1（默认）：进程崩溃但 OS 存活时通常已落盘；断电/内核崩溃不保证。
+// = 0：仅写（write 系统调用后不加 flush），进一步降低同步路径开销。
+// 说明：真正的 fsync（审计级强保证）需要访问底层文件描述符，当前 FileSink
+//       基于 std::ofstream 不暴露 fd，列为后续增强项，此处未提供开关。
+#ifndef SPDIAG_LOG_ERROR_SYNC_FLUSH
+#define SPDIAG_LOG_ERROR_SYNC_FLUSH 1
+#endif

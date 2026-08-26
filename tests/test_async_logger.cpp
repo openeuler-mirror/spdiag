@@ -20,6 +20,7 @@
 
 #include "spdiag/logger.h"
 #include "spdiag/log_macros.h"
+#include "spdiag/log_config.h"
 #include "logger/async_worker.h"
 #include "logger/sinks.h"
 
@@ -27,9 +28,11 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -85,6 +88,24 @@ SpDiag::AsyncLogWorker::SinkGetter MakeSinkGetter(std::shared_ptr<CollectingSink
         return {sink};
     };
 }
+
+// 捕获 std::cerr 输出的 RAII 辅助类，用于验证丢弃告警（首次告警 + 区间汇总）
+// 输出到 stderr。注意：仅适用于串行读取场景（读取前先 StopAndFlush 保证
+// worker 线程已退出，不再并发写 std::cerr）。
+class StderrCapture {
+public:
+    StderrCapture() : old_buf_(std::cerr.rdbuf()) {
+        std::cerr.rdbuf(oss_.rdbuf());
+    }
+    ~StderrCapture() {
+        std::cerr.rdbuf(old_buf_);
+    }
+    std::string Get() const { return oss_.str(); }
+
+private:
+    std::ostringstream oss_;
+    std::streambuf* old_buf_;
+};
 
 // LoggerCore 单例测试夹具：确保每个测试用例的 sink 隔离。
 // SetUp 清空前序测试残留的 sinks，TearDown 排空队列。
@@ -145,35 +166,64 @@ TEST(AsyncLogWorkerQueueFullTest, DroppedCountIncrements) {
     EXPECT_EQ(dropped_after - dropped_before, 3u);
 }
 
-TEST(AsyncLogWorkerQueueFullTest, DropWarnMessageEmitted) {
-    // 丢弃数 ≥100 时，下次批量输出应包含 [WARN] N log messages dropped
+TEST(AsyncLogWorkerQueueFullTest, DropAlertFirstImmediateThenIntervalSummary) {
+    // 新丢弃告警方案（LOG_MODULE_OPTIMIZATION_PLAN.md 方案 A）：
+    //   1. 首次丢弃立即向 stderr 告警一次（first_drop_warned_ 0→1 只触发一次），
+    //      不再像旧方案那样经 sink 批量输出（≥100 条才告警）。
+    //   2. 此后每 summary_interval_ 输出一条区间速率汇总（本区间丢弃数/累计数/速率）。
+    //   3. 无丢弃的区间自动静默（不刷屏）。
     auto sink = std::make_shared<CollectingSink>();
-    SpDiag::AsyncLogWorker worker(1, MakeSinkGetter(sink));
-    // 不启动后台线程，制造 100 次丢弃
-
+    // 注入 20ms 汇总间隔，便于在测试时间尺度内验证区间汇总。
+    SpDiag::AsyncLogWorker worker(1, MakeSinkGetter(sink),
+                                  std::chrono::milliseconds(20));
+    // 不启动后台线程，先填满队列，后续 Enqueue 全部丢弃
     EXPECT_TRUE(worker.Enqueue("only-kept-msg"));
-    // 100 次入队失败，每次等待 1ms ≈ 100ms 总耗时
-    for (int i = 0; i < 100; ++i) {
-        worker.Enqueue("overflow-" + std::to_string(i));
-    }
-    EXPECT_GE(worker.DroppedCount(), 100u);
 
-    // 启动后台线程处理剩余，应输出丢弃告警
+    StderrCapture capture;
+
+    // 连续丢弃若干条：每次 Enqueue 等待 1ms 后超时丢弃
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_FALSE(worker.Enqueue("overflow-" + std::to_string(i)));
+    }
+    EXPECT_GE(worker.DroppedCount(), 3u);
+
+    // 首次丢弃的告警应立即出现在 stderr（无需后台线程参与）
+    EXPECT_NE(capture.Get().find("first log message dropped"), std::string::npos)
+        << "首次丢弃应立即向 stderr 告警";
+
+    // 启动后台线程，等待一个汇总区间过去后唤醒 worker 输出区间汇总
     worker.Start();
-    ASSERT_TRUE(WaitFor([&] { return sink->Count() >= 2; }))
-        << "Expected at least 2 messages (kept + warn), got " << sink->Count();
-    worker.FlushSync();
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));  // 2× 间隔
+    worker.FlushSync();  // 唤醒 worker 执行区间汇总检查
+    worker.StopAndFlush();
 
-    auto messages = sink->GetMessages();
-    bool found_warn = false;
-    for (const auto& m : messages) {
-        if (m.find("[WARN]") != std::string::npos &&
-            m.find("log messages dropped due to queue overflow") != std::string::npos) {
-            found_warn = true;
-            break;
-        }
+    const std::string captured = capture.Get();
+    EXPECT_NE(captured.find("log messages dropped in last"), std::string::npos)
+        << "区间速率汇总应输出到 stderr";
+    EXPECT_NE(captured.find("total 3"), std::string::npos)
+        << "区间汇总应包含累计丢弃数（3 条）";
+}
+
+TEST(AsyncLogWorkerQueueFullTest, DropAlertSilentWhenNoDrops) {
+    // 无丢弃时不应输出任何告警（区间自动静默，避免刷屏）。
+    auto sink = std::make_shared<CollectingSink>();
+    SpDiag::AsyncLogWorker worker(8, MakeSinkGetter(sink),
+                                  std::chrono::milliseconds(20));
+    StderrCapture capture;
+
+    worker.Start();
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(worker.Enqueue("msg-" + std::to_string(i)));
     }
-    EXPECT_TRUE(found_warn) << "Expected [WARN] drop message in output";
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));  // 2× 间隔
+    worker.FlushSync();
+    worker.StopAndFlush();
+
+    EXPECT_EQ(worker.DroppedCount(), 0u);
+    EXPECT_EQ(capture.Get().find("first log message dropped"), std::string::npos)
+        << "无丢弃时不应输出首次告警";
+    EXPECT_EQ(capture.Get().find("log messages dropped in last"), std::string::npos)
+        << "无丢弃时不应输出区间汇总";
 }
 
 // ============================================================================
@@ -207,7 +257,7 @@ TEST(AsyncLogWorkerCounterTest, ConservationEquation) {
     EXPECT_EQ(worker.EnqueuedCount() + worker.DroppedCount(), total);
 
     // 启动后台线程处理，CollectingSink 收到的条数应等于 EnqueuedCount
-    // （丢弃数 < 100，不会产生 WARN 消息）
+    // （丢弃告警走 stderr，不经 sink，因此 sink 只收日志消息本身）
     worker.Start();
     worker.FlushSync();
     EXPECT_EQ(sink->Count(), worker.EnqueuedCount());
@@ -805,4 +855,85 @@ TEST_F(LoggerCoreTest, StackTraceOnError) {
     EXPECT_NE(m.find("stack-test-message"), std::string::npos);
     EXPECT_NE(m.find("Stack trace:"), std::string::npos)
         << "ERROR 级别应输出堆栈";
+}
+
+// ============================================================================
+// 9.7 ERROR 同步输出（LOG_MODULE_OPTIMIZATION_PLAN.md 方案 B）
+// ERROR 级别绕过异步队列，在调用线程直接同步写入 sinks，调用返回前即可见，
+// 不因队列满被丢弃。INFO/WARN 等仍走异步队列。
+// 注意：仅当 SPDIAG_LOG_ERROR_SYNC=1 时 ERROR 才走同步路径；=0 时回退为
+// 全部异步，此时下面 3 个断言同步行为的测试不编译。
+// ============================================================================
+
+#if SPDIAG_LOG_ERROR_SYNC
+
+TEST_F(LoggerCoreTest, ErrorWrittenSynchronously) {
+    // ERROR 同步路径：SPDIAG_LOG_ERROR 返回后消息应已在 sink 中，
+    // 无需 FlushAll / WaitFor（区别于异步路径）。
+    auto collector = std::make_unique<CollectingSink>();
+    auto* raw = collector.get();
+    SpDiag::LoggerCore::GetInstance().AddSink(std::move(collector));
+
+    SPDIAG_LOG_ERROR(SpDiag::LogModule::SDK, "sync-error-%d", 42);
+
+    // 同步写入：调用返回时已落盘到 sink，无需 FlushAll
+    auto msgs = raw->GetMessages();
+    ASSERT_EQ(msgs.size(), static_cast<size_t>(1));
+    EXPECT_NE(msgs[0].find("sync-error-42"), std::string::npos);
+}
+
+TEST_F(LoggerCoreTest, ErrorWithStackWrittenSynchronously) {
+    auto collector = std::make_unique<CollectingSink>();
+    auto* raw = collector.get();
+    SpDiag::LoggerCore::GetInstance().AddSink(std::move(collector));
+
+    SPDIAG_LOG_ERROR_WITH_STACK(SpDiag::LogModule::SDK, "sync-stack-error");
+
+    auto msgs = raw->GetMessages();
+    ASSERT_EQ(msgs.size(), static_cast<size_t>(1));
+    EXPECT_NE(msgs[0].find("sync-stack-error"), std::string::npos);
+    EXPECT_NE(msgs[0].find("Stack trace:"), std::string::npos)
+        << "ERROR 同步路径应包含堆栈";
+}
+
+TEST_F(LoggerCoreTest, ErrorSyncDoesNotDuplicateOnFlush) {
+    // ERROR 同步写入后再次 FlushAll 不应产生重复消息。
+    auto collector = std::make_unique<CollectingSink>();
+    auto* raw = collector.get();
+    SpDiag::LoggerCore::GetInstance().AddSink(std::move(collector));
+
+    SPDIAG_LOG_ERROR(SpDiag::LogModule::SDK, "no-duplicate-error");
+    ASSERT_EQ(raw->Count(), static_cast<size_t>(1));
+
+    SpDiag::LoggerCore::GetInstance().FlushAll();
+    EXPECT_EQ(raw->Count(), static_cast<size_t>(1))
+        << "FlushAll 不应重复写入已同步输出的 ERROR";
+}
+
+#endif  // SPDIAG_LOG_ERROR_SYNC
+
+TEST_F(LoggerCoreTest, NonErrorStillAsync) {
+    // INFO/WARN 仍走异步队列：与 ERROR 同步路径形成对照。
+    auto collector = std::make_unique<CollectingSink>();
+    auto* raw = collector.get();
+    SpDiag::LoggerCore::GetInstance().AddSink(std::move(collector));
+
+    SPDIAG_LOG_INFO(SpDiag::LogModule::SDK, "async-info-message");
+    SPDIAG_LOG_WARN(SpDiag::LogModule::SDK, "async-warn-message");
+
+    // 未 FlushAll 前异步消息可能尚未写入，不在此断言；
+    // FlushAll 后排空队列，全部可见。
+    SpDiag::LoggerCore::GetInstance().FlushAll();
+    ASSERT_TRUE(WaitFor([raw] { return raw->Count() >= 2; }))
+        << "异步 INFO/WARN 应最终到达 sink";
+
+    auto msgs = raw->GetMessages();
+    bool found_info = false;
+    bool found_warn = false;
+    for (const auto& m : msgs) {
+        if (m.find("async-info-message") != std::string::npos) found_info = true;
+        if (m.find("async-warn-message") != std::string::npos) found_warn = true;
+    }
+    EXPECT_TRUE(found_info) << "INFO 异步消息未到达";
+    EXPECT_TRUE(found_warn) << "WARN 异步消息未到达";
 }

@@ -27,6 +27,7 @@
 #include <array>
 #include <cstring>
 #include <cstdlib>
+#include <iostream>
 #include <chrono>
 
 namespace SpDiag {
@@ -214,6 +215,27 @@ void LoggerCore::Log(LogLevel level, LogModule module, const char* fmt,
         return;
     }
 
+#if SPDIAG_LOG_ERROR_SYNC
+    // ERROR 同步路径：绕过异步队列，在调用线程直接写入 sinks，
+    // 保证关键错误不因队列满被丢弃、调用返回前即可见。
+    // （format 阶段与异步路径共用 vsnprintf + FormatMessage。）
+    if (level == LogLevel::ERROR) {
+        va_list args;
+        va_start(args, func);
+        char message[4096];
+        int ret = vsnprintf(message, sizeof(message), fmt, args);
+        va_end(args);
+
+        if (ret >= static_cast<int>(sizeof(message))) {
+            MarkTruncated(message, sizeof(message));
+        }
+
+        std::string formatted = FormatMessage(level, module, message, file, line, func);
+        WriteSync(std::move(formatted));
+        return;
+    }
+#endif
+
     va_list args;
     va_start(args, func);
     char message[4096];
@@ -238,6 +260,26 @@ void LoggerCore::LogWithStack(LogLevel level, LogModule module, const char* fmt,
     if (level < runtime_level_.load(std::memory_order_relaxed)) {
         return;
     }
+
+#if SPDIAG_LOG_ERROR_SYNC
+    // ERROR 同步路径（含堆栈）：与 Log 的 ERROR 分支同理，同步写入保证不丢。
+    if (level == LogLevel::ERROR) {
+        va_list args;
+        va_start(args, func);
+        char message[4096];
+        int ret = vsnprintf(message, sizeof(message), fmt, args);
+        va_end(args);
+
+        if (ret >= static_cast<int>(sizeof(message))) {
+            MarkTruncated(message, sizeof(message));
+        }
+
+        std::string stack_trace = CaptureStackTrace();
+        std::string formatted = FormatMessage(level, module, message, file, line, func, &stack_trace);
+        WriteSync(std::move(formatted));
+        return;
+    }
+#endif
 
     va_list args;
     va_start(args, func);
@@ -265,6 +307,39 @@ void LoggerCore::LogInternal(std::string&& formatted) {
     }
     if (worker) {
         worker->Enqueue(std::move(formatted));
+    }
+}
+
+void LoggerCore::WriteSync(std::string&& formatted) {
+    // ERROR 同步路径：在调用线程直接写入 sinks，不经过异步队列，
+    // 保证关键错误不因队列满被丢弃、调用返回前即可见。
+    // 与后台 worker 的批量写并发，由各 sink 内部互斥锁串行化。
+    if (shutdown_.load()) {
+        return;
+    }
+
+    // 取 sinks 快照：ERROR 低频，shared_lock 成本可忽略；
+    // shared_ptr 快照保证写期间 sink 不被 ClearSinks 析构。
+    std::vector<std::shared_ptr<LogSink>> sinks;
+    {
+        std::shared_lock<std::shared_mutex> lock(sinks_mutex_);
+        sinks = sinks_snapshot_;
+    }
+
+    for (auto& sink : sinks) {
+        try {
+            sink->Write(formatted);
+#if SPDIAG_LOG_ERROR_SYNC_FLUSH
+            // 默认 flush 到内核页缓存（µs 级），进程崩溃但 OS 存活时通常已落盘；
+            // 非 fsync，断电/内核崩溃不保证。见 LOG_MODULE_OPTIMIZATION_PLAN.md 决策 B3。
+            sink->Flush();
+#endif
+        } catch (const std::exception& e) {
+            // 不能使用日志系统本身记录异常（会递归），改用 stderr。
+            std::cerr << "[SpDiag] ERROR sync write exception: " << e.what() << "\n";
+        } catch (...) {
+            std::cerr << "[SpDiag] ERROR sync write unknown exception\n";
+        }
     }
 }
 

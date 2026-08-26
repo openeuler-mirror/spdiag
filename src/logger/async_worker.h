@@ -21,6 +21,7 @@
 #include <functional>
 #include <vector>
 #include <memory>
+#include <chrono>
 
 namespace SpDiag {
 
@@ -43,11 +44,14 @@ public:
 
     /**
      * 构造异步工作线程。
-     * @param capacity  队列最大容量，满时按"短暂等待 + 丢弃"策略处理
-     * @param get_sinks 返回 sinks 的 shared_ptr 快照，后台线程持快照遍历，
-     *                  即使 AddSink 触发 vector 扩容，快照仍有效
+     * @param capacity         队列最大容量，满时按"短暂等待 + 丢弃"策略处理
+     * @param get_sinks        返回 sinks 的 shared_ptr 快照，后台线程持快照遍历，
+     *                         即使 AddSink 触发 vector 扩容，快照仍有效
+     * @param summary_interval 丢弃区间速率汇总的间隔（默认 10s）。仅用于告警节奏
+     *                         控制，测试可传入更小值以验证告警行为。
      */
-    explicit AsyncLogWorker(size_t capacity, SinkGetter get_sinks);
+    AsyncLogWorker(size_t capacity, SinkGetter get_sinks,
+                   std::chrono::milliseconds summary_interval = kDefaultDropSummaryInterval);
     ~AsyncLogWorker();
 
     AsyncLogWorker(const AsyncLogWorker&) = delete;
@@ -92,6 +96,9 @@ public:
     /** 获取当前队列中待处理的消息数（近似值） */
     size_t QueueSize() const;
 
+    // 丢弃区间速率汇总的默认间隔：首次丢弃立即告警，此后每 10s 输出一条区间汇总。
+    static constexpr std::chrono::milliseconds kDefaultDropSummaryInterval{10000};
+
 private:
     void WorkerLoop();
 
@@ -109,10 +116,15 @@ private:
     // dropped_：累计丢弃数（自启动起永不重置），供 DroppedCount() API 暴露，
     //           保证用户能观测到"持续小量渗漏"等长期异常。
     std::atomic<size_t> dropped_{0};
-    // batch_dropped_：本批次丢弃数（WorkerLoop 每次 swap 后 exchange(0) 清零），
-    //           仅用于触发 kDropWarnThreshold 的汇总告警，避免单批 < 阈值时
-    //           持续渗漏永远不告警。
-    std::atomic<size_t> batch_dropped_{0};
+    // —— 丢弃告警（首次立即告警 + 区间速率汇总）——
+    // first_drop_warned_：首次丢弃已告警（0→1 只触发一次），防止每秒刷屏。
+    std::atomic<bool> first_drop_warned_{false};
+    // interval_dropped_：当前汇总区间内丢弃数，WorkerLoop 每轮 exchange(0) 清零。
+    std::atomic<size_t> interval_dropped_{0};
+    // 汇总间隔（默认 10s），仅 worker 单线程逻辑读取。
+    std::chrono::milliseconds summary_interval_;
+    // 当前区间起始时刻，仅 worker 单线程访问，无需原子。
+    std::chrono::steady_clock::time_point interval_start_;
     std::atomic<size_t> enqueued_{0};
 
     std::thread worker_thread_;

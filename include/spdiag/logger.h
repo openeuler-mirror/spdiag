@@ -129,6 +129,10 @@ private:
 
     void LogInternal(std::string&& formatted);
 
+    // ERROR 同步路径：取 sinks 快照后逐 sink 同步 Write（可选 Flush）。
+    // 与后台 worker 的批量写并发，由各 sink 内部互斥锁串行化。
+    void WriteSync(std::string&& formatted);
+
     std::atomic<bool> shutdown_{false};
 
     // worker_mutex_: 保护 async_worker_ 指针的读写。
