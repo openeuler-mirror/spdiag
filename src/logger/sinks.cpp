@@ -21,10 +21,14 @@
 namespace SpDiag {
 
 void ConsoleSink::Write(const std::string& message) {
+    // ERROR 同步路径可能从任意业务线程并发写入，与后台 worker 竞争，
+    // 加锁保证单条消息原子输出（不会与其它线程输出交叉错乱）。
+    std::lock_guard<std::mutex> lock(mutex_);
     std::cerr << message << '\n';
 }
 
 void ConsoleSink::Flush() {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::cerr.flush();
 }
 
@@ -56,6 +60,9 @@ FileSink::~FileSink() {
 }
 
 void FileSink::Write(const std::string& message) {
+    // ERROR 同步路径与后台 worker 可能并发写同一文件，加锁保护
+    // file_/current_size_/write_error_reported_ 及轮转状态的完整性。
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!file_.is_open()) {
         return;
     }
@@ -85,6 +92,7 @@ void FileSink::Write(const std::string& message) {
 }
 
 void FileSink::Flush() {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (file_.is_open()) {
         file_.flush();
     }

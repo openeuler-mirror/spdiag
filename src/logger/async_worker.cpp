@@ -22,8 +22,6 @@ namespace SpDiag {
 namespace {
 // 后台线程的常规刷盘间隔
 constexpr auto kFlushInterval = std::chrono::milliseconds(100);
-// 丢弃告警阈值：单批丢弃达到此值时输出一条汇总告警
-constexpr size_t kDropWarnThreshold = 100;
 
 // 队列满时业务线程的等待时长：从编译期宏 SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS 转换。
 // timeout = 0ms 时 wait_for 会立即返回（等价于非阻塞检查），无需特殊分支。
@@ -31,8 +29,12 @@ constexpr auto kEnqueueTimeout =
     std::chrono::milliseconds(SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS);
 } // anonymous namespace
 
-AsyncLogWorker::AsyncLogWorker(size_t capacity, SinkGetter get_sinks)
-    : capacity_(capacity), get_sinks_(std::move(get_sinks)) {}
+AsyncLogWorker::AsyncLogWorker(size_t capacity, SinkGetter get_sinks,
+                               std::chrono::milliseconds summary_interval)
+    : capacity_(capacity),
+      get_sinks_(std::move(get_sinks)),
+      summary_interval_(summary_interval),
+      interval_start_(std::chrono::steady_clock::now()) {}
 
 AsyncLogWorker::~AsyncLogWorker() {
     StopAndFlush();
@@ -65,11 +67,17 @@ bool AsyncLogWorker::Enqueue(std::string&& message) {
             return false;
         }
         if (queue_.size() >= capacity_) {
-            // 二次检查仍满，丢弃
-            // dropped_：累计计数（永不重置），供 DroppedCount() API 观测长期异常
-            // batch_dropped_：本批次计数（WorkerLoop 清零），用于触发汇总告警
-            dropped_.fetch_add(1);
-            batch_dropped_.fetch_add(1);
+            // 二次检查仍满，丢弃。
+            // 累计计数 dropped_ 永不重置（供 DroppedCount() API 观测长期异常）；
+            // 首次丢弃立即告警一次（first_drop_warned_ 0→1），避免每次丢弃刷屏；
+            // 区间计数 interval_dropped_ 由 WorkerLoop 每 summary_interval_ 汇总一次。
+            size_t cumulative = dropped_.fetch_add(1) + 1;
+            interval_dropped_.fetch_add(1, std::memory_order_relaxed);
+            if (!first_drop_warned_.exchange(true)) {
+                std::cerr << "[SpDiag] WARNING: first log message dropped "
+                          << "(cumulative " << cumulative
+                          << ") due to queue overflow\n";
+            }
             return false;
         }
     }
@@ -160,15 +168,6 @@ void AsyncLogWorker::WorkerLoop() {
             cv_not_full_.notify_all();
         }
 
-        // 输出丢弃告警（锁外，避免与 Enqueue 竞争 queue_mutex_）。
-        // 只重置 batch_dropped_（批次计数），累计 dropped_ 永不清零，
-        // 保证用户通过 DroppedCount() 能观测到"持续 < 阈值的渗漏"。
-        size_t drops = batch_dropped_.exchange(0);
-        if (drops >= kDropWarnThreshold) {
-            batch.push("[WARN] " + std::to_string(drops)
-                       + " log messages dropped due to queue overflow");
-        }
-
         // 批量写入（锁外执行 I/O）
         // get_sinks_ 返回 shared_ptr 快照，避免 AddSink 扩容导致引用悬空
         // try-catch 防止单个 sink 异常导致后台线程终止、后续日志全丢。
@@ -189,13 +188,41 @@ void AsyncLogWorker::WorkerLoop() {
             batch.pop();
         }
 
+        // 丢弃区间速率汇总：每 summary_interval_ 输出一条"本区间丢弃数 + 速率"。
+        // worker 单线程访问，非热路径；无丢弃的区间自动静默（不刷屏）。
+        // 仅在 worker 因消息/刷盘被唤醒时执行，高压丢弃期间 worker 持续活跃，
+        // 汇总得以按节奏输出；丢弃停止后剩余区间延迟到下次活动再补报。
+        auto now = std::chrono::steady_clock::now();
+        if (now - interval_start_ >= summary_interval_) {
+            double secs = std::chrono::duration<double>(now - interval_start_).count();
+            size_t dropped_in_interval = interval_dropped_.exchange(0);
+            interval_start_ = now;
+            if (dropped_in_interval > 0) {
+                size_t cumulative = dropped_.load();
+                double rate = dropped_in_interval / secs;
+                // 间隔 >= 1s 用秒显示，否则用毫秒（测试可注入小间隔）
+                std::string interval_desc;
+                if (secs >= 1.0) {
+                    interval_desc = std::to_string(static_cast<int>(secs)) + "s";
+                } else {
+                    interval_desc =
+                        std::to_string(
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                summary_interval_).count()) + "ms";
+                }
+                std::cerr << "[SpDiag] WARNING: " << dropped_in_interval
+                          << " log messages dropped in last " << interval_desc
+                          << " (total " << cumulative << ", rate ~" << rate
+                          << "/s, queue cap " << capacity_ << ")\n";
+            }
+        }
+
         // 刷盘决策：时间阈值 或 FlushSync 请求。
         // 仅当队列已空时才响应 flush_requested_，避免队列仍有积压时
         // 过早通知 FlushSync 导致后续消息无人唤醒（死锁）。
         // 注意：此处不清除 flush_requested_——必须在落盘完成后再清除，
         // 否则 FlushSync 的谓词 (!flush_requested_ && queue_.empty())
         // 会在真正落盘前变为 true，导致 FlushSync 提前返回（同步刷盘语义被破坏）。
-        auto now = std::chrono::steady_clock::now();
         bool time_to_flush = (now - last_flush >= kFlushInterval);
         bool should_flush = time_to_flush;
         {

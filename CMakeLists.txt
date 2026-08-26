@@ -43,6 +43,15 @@ set(SPDIAG_ASYNC_QUEUE_SIZE "8192" CACHE STRING "Async log queue capacity")
 #   = 0 立即丢弃（非阻塞模式），完全避免日志路径反噬业务线程
 set(SPDIAG_ASYNC_ENQUEUE_TIMEOUT_MS "1" CACHE STRING
     "Async log enqueue timeout on queue full (ms, 0 = non-blocking drop)")
+# ERROR 是否绕过异步队列、在调用线程直接同步写入 sinks。
+# = 1（默认）：ERROR 保证不因队列满被丢弃、调用返回前即可见；
+# = 0：回退到"全部异步"（ERROR 也可能在高压下被丢弃）。
+set(SPDIAG_LOG_ERROR_SYNC "1" CACHE STRING
+    "Write ERROR logs synchronously in calling thread (1 = default, 0 = fully async)")
+# ERROR 同步写入后是否调用 sink->Flush()（flush 到内核页缓存，非 fsync 强制落盘）。
+# = 1（默认）：进程崩溃但 OS 存活时通常已落盘；= 0：仅 write 不加 flush。
+set(SPDIAG_LOG_ERROR_SYNC_FLUSH "1" CACHE STRING
+    "Flush after synchronous ERROR write (1 = default, 0 = write only)")
 
 # ---------------------------------------------------------------------------
 # 构建身份信息：生成 _build_info.h，含 git HEAD SHA + 构建时间戳。
