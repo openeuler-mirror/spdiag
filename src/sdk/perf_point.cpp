@@ -147,7 +147,8 @@ void PerfPoint::End(int returnCode) {
         uint64_t endTs = NowNs();
         // acquire：与 Start 的 release 配对，必读到 Start 线程写的时间戳。
         uint64_t elapsed = endTs - startTsGlobal_.load(std::memory_order_acquire);
-        elapsed = (elapsed * nsPerTick_) >> 32;
+        // Widen before multiplying: the Q32 intermediate exceeds 64 bits near 4.295s.
+        elapsed = static_cast<uint64_t>((static_cast<__uint128_t>(elapsed) * nsPerTick_) >> 32);
         if (LIKELY(returnCode == 0)) {
             gaccum_->goodCount.fetch_add(1, RLX);
         } else {
@@ -170,7 +171,8 @@ void PerfPoint::End(int returnCode) {
     stat_->slotIndex = mgr.FastResolveSlot(slotIndex_);
     stat_->level = static_cast<uint8_t>(level_);
 
-    elapsed = (elapsed * nsPerTick_) >> 32;
+    // Widen before multiplying, as in the global path and Platform::TicksToNs.
+    elapsed = static_cast<uint64_t>((static_cast<__uint128_t>(elapsed) * nsPerTick_) >> 32);
 
     if (LIKELY(returnCode == 0)) {
         stat_->backGoodCount++;

@@ -35,6 +35,7 @@ static constexpr uint32_t kStatCount = static_cast<uint32_t>(SpDiag::PerfKeyDefi
 TEST_F(PerfPointTest, NormalEnd) {
     {
         SpDiag::PerfPoint pt(SpDiag::PerfKeyDefined::COMPUTE_MATMUL, SpDiag::PerfLevel::SUB_SYSTEM);
+        pt.Start();
         pt.End(0);
     }
     auto& shard = SpDiag::PerfManager::Instance().GetShard();
@@ -51,6 +52,7 @@ TEST_F(PerfPointTest, NormalEnd) {
 TEST_F(PerfPointTest, BadReturnCode) {
     {
         SpDiag::PerfPoint pt(SpDiag::PerfKeyDefined::COMPUTE_PRIME, SpDiag::PerfLevel::SUB_SYSTEM);
+        pt.Start();
         pt.End(1);
     }
     auto& shard = SpDiag::PerfManager::Instance().GetShard();
@@ -67,6 +69,7 @@ TEST_F(PerfPointTest, BadReturnCode) {
 TEST_F(PerfPointTest, AbandonOnDestruct) {
     {
         SpDiag::PerfPoint pt(SpDiag::PerfKeyDefined::IO_IOTASK, SpDiag::PerfLevel::SUB_SYSTEM);
+        pt.Start();
     }
     auto& shard = SpDiag::PerfManager::Instance().GetShard();
     bool found = false;
@@ -82,6 +85,7 @@ TEST_F(PerfPointTest, AbandonOnDestruct) {
 TEST_F(PerfPointTest, LevelFiltering) {
     {
         SpDiag::PerfPoint pt(SpDiag::PerfKeyDefined::PROCESS_WORK, static_cast<SpDiag::PerfLevel>(99));
+        pt.Start();
         pt.End(0);
     }
     auto& shard = SpDiag::PerfManager::Instance().GetShard();
@@ -95,6 +99,7 @@ TEST_F(PerfPointTest, LevelFiltering) {
 TEST_F(PerfPointTest, ExplicitAbandon) {
     {
         SpDiag::PerfPoint pt(SpDiag::PerfKeyDefined::PIPELINE_STAGE1, SpDiag::PerfLevel::SUB_SYSTEM);
+        pt.Start();
         pt.Abandon();
     }
     auto& shard = SpDiag::PerfManager::Instance().GetShard();
