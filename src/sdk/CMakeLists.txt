@@ -54,6 +54,7 @@ if(SPDIAG_DEBUG_FRAMES)
 endif()
 
 target_compile_options(spdiag_lib PUBLIC -Wno-stringop-overflow)
+target_compile_definitions(spdiag_lib PRIVATE _GNU_SOURCE)
 
 target_include_directories(spdiag_lib PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>

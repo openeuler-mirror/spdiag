@@ -109,6 +109,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    if(TEST_NAME STREQUAL "test_perf_manager_def")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 20)
+    endif()
 endforeach()
 
 # The disabled PerfPoint must retain the normal source syntax without pulling

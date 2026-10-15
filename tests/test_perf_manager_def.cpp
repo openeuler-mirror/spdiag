@@ -32,6 +32,7 @@
 #include "spdiag/perf_config.h"
 #include "spdiag/shm_layout.h"
 #include "runtime/shm_reader.h"
+#include "sdk/platform.h"
 
 namespace {
 
@@ -154,6 +155,19 @@ TEST_F(PerfManagerDefTest, InitWithDefFileSucceeds) {
     }
     // Parsed without crashing; comment/blank/malformed lines skipped by sscanf.
     EXPECT_TRUE(SpDiag::PerfManager::Instance().IsInitialized());
+}
+
+TEST_F(PerfManagerDefTest, StaleLegacySpinlockDoesNotBlockRegistration) {
+    using namespace SpDiag;
+
+    ShmHandle handle = Platform::ShmOpenReadWrite(kShmName, sizeof(ShmHeader));
+    ASSERT_NE(handle.baseAddr, nullptr);
+    auto* header = static_cast<ShmHeader*>(handle.baseAddr);
+    header->spinlock.test_and_set(std::memory_order_release);
+    Platform::ShmClose(handle);
+
+    PerfManager::Instance().Init(MakePerfCfg("staleLockProgram", 3));
+    EXPECT_TRUE(PerfManager::Instance().IsInitialized());
 }
 
 // ConnectAndRegister resets a slot's PerfStat when, on re-registering the SAME

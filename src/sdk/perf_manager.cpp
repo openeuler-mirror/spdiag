@@ -18,6 +18,8 @@
 #include "platform.h"
 #include "shm_probe.h"
 #include "global_perf_point_factory.h"
+#include "registry_file_guard.h"
+#include <chrono>
 #include <thread>
 #include <cstring>
 #include <cstdio>
@@ -31,6 +33,8 @@
 namespace SpDiag {
 
 namespace {
+
+constexpr auto registryLockTimeout = std::chrono::milliseconds(30000);
 
 void ResolveAndWriteSlotName(
     char* keyNames, char* keyModuleNames,
@@ -335,7 +339,18 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
     ShmHeader* hdr = shmWriter_->Header();
     uint8_t* base = reinterpret_cast<uint8_t*>(hdr);
 
-    while (hdr->spinlock.test_and_set(std::memory_order_acquire)) {}
+    int lockError = 0;
+    auto registryGuard = RegistryFileGuard::AcquireFor(
+        shmWriter_->Fd(), registryLockTimeout, &lockError);
+    if (!registryGuard) {
+        SPDIAG_LOG_ERROR(
+            LogModule::SDK,
+            "shared-memory registration lock failed after %lld ms: errno=%d (%s)",
+            static_cast<long long>(registryLockTimeout.count()), lockError,
+            std::strerror(lockError));
+        shmWriter_.reset();
+        return false;
+    }
 
     ProgramEntry* registry = reinterpret_cast<ProgramEntry*>(base + hdr->registryOffset);
 
@@ -400,7 +415,7 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         }
 
         if (baseSlot + slotCount_ > hdr->maxSlots) {
-            hdr->spinlock.clear(std::memory_order_release);
+            registryGuard.reset();
             shmWriter_.reset();
             return false;
         }
@@ -424,7 +439,7 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         hdr->registeredPrograms++;
     }
 
-    hdr->spinlock.clear(std::memory_order_release);
+    registryGuard.reset();
 
     baseOffset_ = baseSlot;
 

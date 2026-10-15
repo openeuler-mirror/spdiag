@@ -31,6 +31,7 @@ public:
     ShmHeader*   Header();
     void*        ShardPtr(uint32_t programIndex, uint32_t coreIndex);
     PerfStat*    GlobalAccumPtr();   // 全局 PerfPoint 累加区（v3）；缺省(globalAccumCount==0)返回 nullptr
+    int          Fd() const { return handle_.fd; }
 
     void WriteHeader(const ShmHeader& hdr);
     void WriteShard(uint32_t programIndex, uint32_t coreIndex, const void* data, size_t size);
