@@ -14,7 +14,9 @@
 #include "sdk/platform.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
+#include <sys/stat.h>
 
 namespace {
 constexpr const char* kShmName = "/spdiag_test_platform_unit";
@@ -90,7 +92,7 @@ TEST(PlatformShmTest, OpenRejectsObjectSmallerThanRequestedMapping) {
 }
 
 TEST(PlatformShmTest, ExclusiveCreateDoesNotTruncateExistingObject) {
-    SpDiag::Platform::ShmDestroy(kShmName);
+    ASSERT_TRUE(SpDiag::Platform::ShmDestroy(kShmName));
     SpDiag::ShmHandle first =
         SpDiag::Platform::ShmCreate(kShmName, kShmSize);
     ASSERT_NE(first.baseAddr, nullptr);
@@ -102,5 +104,30 @@ TEST(PlatformShmTest, ExclusiveCreateDoesNotTruncateExistingObject) {
     EXPECT_EQ(static_cast<unsigned char*>(first.baseAddr)[0], 0x5a);
 
     SpDiag::Platform::ShmClose(first);
-    SpDiag::Platform::ShmDestroy(kShmName);
+    EXPECT_TRUE(SpDiag::Platform::ShmDestroy(kShmName));
+}
+
+TEST(PlatformShmTest, CreatePublishesReadWriteModeIndependentOfUmask) {
+    ASSERT_TRUE(SpDiag::Platform::ShmDestroy(kShmName));
+    const mode_t oldMask = umask(0077);
+    SpDiag::ShmHandle handle =
+        SpDiag::Platform::ShmCreate(kShmName, kShmSize);
+    umask(oldMask);
+
+    ASSERT_NE(handle.baseAddr, nullptr);
+    struct stat info {};
+    ASSERT_EQ(fstat(handle.fd, &info), 0);
+    EXPECT_EQ(info.st_mode & 0777, 0666);
+    EXPECT_TRUE(SpDiag::Platform::ShmCheckReadWrite(kShmName));
+
+    SpDiag::Platform::ShmClose(handle);
+    EXPECT_TRUE(SpDiag::Platform::ShmDestroy(kShmName));
+}
+
+TEST(PlatformShmTest, InvalidNameReportsExistenceError) {
+    int errorCode = 0;
+    EXPECT_EQ(SpDiag::Platform::ShmCheckExistence("/invalid/name",
+                                                   &errorCode),
+              SpDiag::ShmExistence::ERROR);
+    EXPECT_EQ(errorCode, EINVAL);
 }

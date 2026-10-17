@@ -12,6 +12,7 @@
 
 #include "manager.h"
 
+#include "file_lock_guard.h"
 #include "sdk/platform.h"
 #include "sdk/shm_probe.h"
 #include "sdk/shm_writer.h"
@@ -36,6 +37,7 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -50,6 +52,27 @@
 namespace SpDiag {
 
 namespace {
+
+void PrintShmOperationError(const char* action, const std::string& shmName,
+                            int errorCode) {
+    std::cerr << "spdiag: failed to " << action << " SHM " << shmName
+              << ": " << std::strerror(errorCode);
+    if (errorCode == EACCES || errorCode == EPERM) {
+        std::cerr << "; run the command as the SHM owner or root";
+    }
+    std::cerr << std::endl;
+}
+
+bool CheckShmExistence(const std::string& shmName, bool& exists) {
+    int errorCode = 0;
+    const auto state = Platform::ShmCheckExistence(shmName, &errorCode);
+    if (state == ShmExistence::ERROR) {
+        PrintShmOperationError("inspect", shmName, errorCode);
+        return false;
+    }
+    exists = state == ShmExistence::PRESENT;
+    return true;
+}
 
 std::string TrimCopy(std::string s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
@@ -472,56 +495,103 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
     return true;
 }
 
-bool SpDiagManager::DestroyShm(const std::string& shmName) {
-    ShmWriter writer;
-    auto probe = ProbeShmHeader(shmName);
-    if (!probe.valid) {
-        Platform::ShmDestroy(shmName);
-        return true;
-    }
-    size_t totalSize = probe.totalSize;
-
-    // 清零 shard 区域后销毁（best effort，不依赖 header 字段的正确性）
-    if (writer.Open(shmName, totalSize)) {
-        ShmHeader* hdr = writer.Header();
-        uint8_t* base = reinterpret_cast<uint8_t*>(hdr);
-        size_t shardsOffset = hdr->shardsOffset;
-        // 防御：shardsOffset 不越界才能清零 shard 区
-        if (shardsOffset < totalSize) {
-            size_t shardSize = ShmShardSize(hdr->maxSlots);
-            size_t shardAreaSize = hdr->numCores * shardSize;
-            // 裁剪到可用范围，防止 header 字段异常导致越界写入
-            if (shardAreaSize > totalSize - shardsOffset) {
-                shardAreaSize = totalSize - shardsOffset;
-            }
-            std::memset(base + shardsOffset, 0, shardAreaSize);
-        }
-        writer.Release();
-    }
-
-    Platform::ShmDestroy(shmName);
-    return true;
+bool SpDiagManager::DestroyShm(const std::string& shmName, int* errorCode) {
+    return Platform::ShmDestroy(shmName, errorCode);
 }
 
-bool SpDiagManager::StartShm(const Cli::CliConfig& config) {
-    if (CheckShmAlive(config.shmName)) {
-        SPDIAG_LOG_ERROR(LogModule::MANAGER, "spdiag is already running");
+bool SpDiagManager::RecreateShm(const Cli::CliConfig& config,
+                                bool startCommand) {
+    int lockError = 0;
+    auto lifecycle = FileLockGuard::AcquireFor(
+        MakeLockName("lifecycle", config.shmName),
+        std::chrono::seconds(5), &lockError);
+    if (!lifecycle) {
+        std::cerr << "spdiag: lifecycle lock unavailable (error "
+                  << lockError << ")" << std::endl;
+        return false;
+    }
+
+    if (startCommand) {
+        bool exists = false;
+        if (!CheckShmExistence(config.shmName, exists)) {
+            return false;
+        }
+        if (exists) {
+            const auto probe = ProbeShmHeader(config.shmName);
+            if (!probe.valid) {
+                std::cerr
+                    << "spdiag: existing SHM cannot be used safely; stop "
+                       "Mooncake and run 'spdiag restart'"
+                    << std::endl;
+                return false;
+            }
+            int accessError = 0;
+            if (!Platform::ShmCheckReadWrite(config.shmName, &accessError)) {
+                PrintShmOperationError("open read-write", config.shmName,
+                                       accessError);
+                return false;
+            }
+            std::cout << "spdiag already running (SHM: " << config.shmName
+                      << ")" << std::endl;
+            return true;
+        }
+    } else {
+        std::cerr << "spdiag: warning: restart is a repair operation that "
+                     "force-recreates the shared SHM; stop Mooncake first "
+                     "because this command does not stop business processes"
+                  << std::endl;
+    }
+
+    int destroyError = 0;
+    if (!DestroyShm(config.shmName, &destroyError)) {
+        PrintShmOperationError("remove", config.shmName, destroyError);
         return false;
     }
     if (!CreateShm(config)) {
         return false;
     }
-    std::cout << "spdiag started (SHM: " << config.shmName << ")" << std::endl;
+    auto probe = ProbeShmHeader(config.shmName);
+    if (!probe.valid) {
+        (void)DestroyShm(config.shmName);
+        std::cerr << "spdiag: created SHM failed verification" << std::endl;
+        return false;
+    }
+
+    std::cout << "spdiag " << (startCommand ? "started" : "restarted")
+              << " (SHM: " << config.shmName << ")" << std::endl;
     return true;
 }
 
+bool SpDiagManager::StartShm(const Cli::CliConfig& config) {
+    return RecreateShm(config, true);
+}
+
 bool SpDiagManager::StopShm(const Cli::CliConfig& config) {
-    if (!CheckShmAlive(config.shmName)) {
-        SPDIAG_LOG_ERROR(LogModule::MANAGER, "spdiag is not running");
+    int lockError = 0;
+    auto lifecycle = FileLockGuard::AcquireFor(
+        MakeLockName("lifecycle", config.shmName),
+        std::chrono::seconds(5), &lockError);
+    if (!lifecycle) {
+        std::cerr << "spdiag: lifecycle lock unavailable (error "
+                  << lockError << ")" << std::endl;
         return false;
     }
-    if (!DestroyShm(config.shmName)) {
-        SPDIAG_LOG_ERROR(LogModule::MANAGER, "failed to stop spdiag");
+
+    int inspectError = 0;
+    const auto existence =
+        Platform::ShmCheckExistence(config.shmName, &inspectError);
+    if (existence == ShmExistence::PRESENT) {
+        std::cerr << "spdiag: warning: stop disables shared SpDiag "
+                     "observation for all users; business processes are not "
+                     "stopped" << std::endl;
+    } else if (existence == ShmExistence::ERROR) {
+        std::cerr << "spdiag: warning: unable to inspect SHM "
+                  << config.shmName << ": " << std::strerror(inspectError)
+                  << "; attempting unlink for recovery" << std::endl;
+    }
+    int destroyError = 0;
+    if (!DestroyShm(config.shmName, &destroyError)) {
+        PrintShmOperationError("remove", config.shmName, destroyError);
         return false;
     }
     std::cout << "spdiag stopped" << std::endl;
@@ -538,13 +608,7 @@ bool SpDiagManager::ShmStatus(const Cli::CliConfig& config) {
 }
 
 bool SpDiagManager::RestartShm(const Cli::CliConfig& config) {
-    DestroyShm(config.shmName);
-    processor_.ClearSharedMemory(config.shmName);
-    if (!CreateShm(config)) {
-        return false;
-    }
-    std::cout << "spdiag restarted (SHM: " << config.shmName << ")" << std::endl;
-    return true;
+    return RecreateShm(config, false);
 }
 
 bool SpDiagManager::EnsureCustomPlugin(const Cli::CliConfig& config) {

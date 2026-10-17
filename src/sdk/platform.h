@@ -25,13 +25,23 @@ struct ShmHandle {
     int      errorCode  = 0;
 };
 
+enum class ShmExistence {
+    ABSENT,
+    PRESENT,
+    ERROR,
+};
+
 namespace Platform {
 
 ShmHandle ShmCreate(const std::string& name, size_t size);
 ShmHandle ShmOpenReadOnly(const std::string& name, size_t size);
 ShmHandle ShmOpenReadWrite(const std::string& name, size_t size);
+ShmExistence ShmCheckExistence(const std::string& name,
+                               int* errorCode = nullptr);
+bool      ShmCheckReadWrite(const std::string& name,
+                            int* errorCode = nullptr);
 void      ShmClose(ShmHandle& handle);
-void      ShmDestroy(const std::string& name);
+bool      ShmDestroy(const std::string& name, int* errorCode = nullptr);
 
 uint32_t  GetCurrentCpuId();
 uint64_t  GetTimestampNs();

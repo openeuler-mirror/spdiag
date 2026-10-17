@@ -70,7 +70,8 @@ public:
 
 private:
     bool CreateShm(const Cli::CliConfig& config);
-    bool DestroyShm(const std::string& shmName);
+    bool DestroyShm(const std::string& shmName, int* errorCode = nullptr);
+    bool RecreateShm(const Cli::CliConfig& config, bool startCommand);
     bool EnsureCustomPlugin(const Cli::CliConfig& config);
 #if defined(SPDIAG_HAS_OB)
     bool EnsureMemstatPlugin(const Cli::CliConfig& config);
