@@ -15,12 +15,16 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <new>
 #include <algorithm>
 
 namespace SpDiag {
 
-constexpr uint32_t shmMagic          = 0x50455246;
+// ABI v1 uses a new magic so pre-ABI SDKs fail closed before interpreting
+// conditional ShmHeader/PerfStat layouts.
+constexpr uint32_t shmMagic          = 0x53504447;  // "SPDG"
 constexpr uint32_t maxProgramsDefault = 8;
 constexpr uint32_t MAX_PERF_SLOTS    = 256;
 constexpr uint32_t MAX_GLOBAL_POINTS = MAX_PERF_SLOTS;
@@ -29,6 +33,20 @@ constexpr uint32_t maxTopN           = 100;
 #endif
 constexpr uint32_t perflogTimestampCount = 100;
 constexpr uint32_t nameLen           = 64;
+constexpr uint8_t shmLayoutAbiRevision = 1;
+constexpr uint8_t shmFeaturePercentile = 1U << 0;
+constexpr uint8_t shmFeaturePerfLog = 1U << 1;
+
+constexpr uint8_t CurrentShmFeatureMask() {
+    uint8_t mask = 0;
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    mask |= shmFeaturePercentile;
+#endif
+#ifdef SPDIAG_ENABLE_PERFLOG
+    mask |= shmFeaturePerfLog;
+#endif
+    return mask;
+}
 
 struct ProgramEntry {
     char     name[64];
@@ -216,16 +234,22 @@ inline void UpdateTopNAtomic(GlobalAccum& a, uint64_t v) {
 }
 #endif
 
+constexpr size_t shmShardStatsOffset = alignof(PerfStat);
+static_assert(shmShardStatsOffset >= sizeof(uint32_t),
+              "shard metadata must fit before aligned PerfStat data");
+
 inline size_t ShmShardSize(uint32_t maxSlots) {
-    return sizeof(uint32_t) + maxSlots * sizeof(PerfStat);
+    return shmShardStatsOffset + maxSlots * sizeof(PerfStat);
 }
 
 inline PerfStat* ShmShardStats(void* shardPtr) {
-    return reinterpret_cast<PerfStat*>(static_cast<uint8_t*>(shardPtr) + sizeof(uint32_t));
+    return static_cast<PerfStat*>(static_cast<void*>(
+        static_cast<uint8_t*>(shardPtr) + shmShardStatsOffset));
 }
 
 inline const PerfStat* ShmShardStats(const void* shardPtr) {
-    return reinterpret_cast<const PerfStat*>(static_cast<const uint8_t*>(shardPtr) + sizeof(uint32_t));
+    return static_cast<const PerfStat*>(static_cast<const void*>(
+        static_cast<const uint8_t*>(shardPtr) + shmShardStatsOffset));
 }
 
 struct ShmHeader {
@@ -263,12 +287,132 @@ struct ShmHeader {
     uint32_t                globalAccumCount  = 0;
 };
 
+struct ShmLayoutDescriptor {
+    size_t registryOffset = 0;
+    size_t keyNamesOffset = 0;
+    size_t keyModuleNamesOffset = 0;
+    size_t activeBitmapOffset = 0;
+    size_t shardsOffset = 0;
+    size_t globalAccumOffset = 0;
+    size_t totalSize = 0;
+};
+
+inline bool CheckedSizeAdd(size_t lhs, size_t rhs, size_t& result) {
+    if (rhs > std::numeric_limits<size_t>::max() - lhs) {
+        return false;
+    }
+    result = lhs + rhs;
+    return true;
+}
+
+inline bool CheckedSizeMultiply(size_t lhs, size_t rhs, size_t& result) {
+    if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
+        return false;
+    }
+    result = lhs * rhs;
+    return true;
+}
+
+inline bool CheckedAlignUp(size_t value, size_t alignment, size_t& result) {
+    if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+        return false;
+    }
+    const size_t remainder = value & (alignment - 1);
+    if (remainder == 0) {
+        result = value;
+        return true;
+    }
+    return CheckedSizeAdd(value, alignment - remainder, result);
+}
+
+inline bool ComputeShmLayout(uint32_t maxSlots, uint32_t maxPrograms,
+                             uint32_t numCores, ShmLayoutDescriptor& layout) {
+    if (maxSlots == 0 || maxPrograms == 0 || numCores == 0) {
+        return false;
+    }
+
+    size_t registryBytes = 0;
+    size_t namesBytes = 0;
+    size_t statsBytes = 0;
+    size_t shardSize = 0;
+    size_t shardsBytes = 0;
+    if (!CheckedSizeMultiply(maxPrograms, sizeof(ProgramEntry), registryBytes) ||
+        !CheckedSizeMultiply(maxSlots, nameLen, namesBytes) ||
+        !CheckedSizeMultiply(maxSlots, sizeof(PerfStat), statsBytes) ||
+        !CheckedSizeAdd(shmShardStatsOffset, statsBytes, shardSize) ||
+        !CheckedSizeMultiply(numCores, shardSize, shardsBytes)) {
+        return false;
+    }
+
+    layout.registryOffset = sizeof(ShmHeader);
+    if (!CheckedSizeAdd(layout.registryOffset, registryBytes,
+                        layout.keyNamesOffset) ||
+        !CheckedSizeAdd(layout.keyNamesOffset, namesBytes,
+                        layout.keyModuleNamesOffset) ||
+        !CheckedSizeAdd(layout.keyModuleNamesOffset, namesBytes,
+                        layout.activeBitmapOffset) ||
+        !CheckedSizeAdd(layout.activeBitmapOffset, maxSlots,
+                        layout.shardsOffset) ||
+        !CheckedAlignUp(layout.shardsOffset, alignof(PerfStat),
+                        layout.shardsOffset) ||
+        !CheckedSizeAdd(layout.shardsOffset, shardsBytes,
+                        layout.globalAccumOffset) ||
+        !CheckedAlignUp(layout.globalAccumOffset, alignof(PerfStat),
+                        layout.globalAccumOffset) ||
+        !CheckedSizeAdd(layout.globalAccumOffset, statsBytes,
+                        layout.totalSize)) {
+        return false;
+    }
+    return true;
+}
+
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
               "dumpSeqNo must be lock-free for shared memory usage");
 static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t),
               "atomic<uint64_t> size mismatch");
 static_assert(alignof(std::atomic<uint64_t>) == alignof(uint64_t),
               "atomic<uint64_t> alignment mismatch");
+
+struct PerfStatAlignedByteDeleter {
+    void operator()(uint8_t* ptr) const noexcept {
+        ::operator delete[](ptr, std::align_val_t{alignof(PerfStat)});
+    }
+};
+
+class PerfStatBuffer {
+public:
+    void resize(size_t count) {
+        const size_t bytes = count * sizeof(PerfStat);
+        if (bytes == 0) {
+            data_.reset();
+            count_ = 0;
+            return;
+        }
+        data_.reset(static_cast<uint8_t*>(::operator new[](
+            bytes, std::align_val_t{alignof(PerfStat)})));
+        count_ = count;
+        std::memset(data_.get(), 0, bytes);
+    }
+
+    PerfStat* data() {
+        return static_cast<PerfStat*>(static_cast<void*>(data_.get()));
+    }
+
+    const PerfStat* data() const {
+        return static_cast<const PerfStat*>(
+            static_cast<const void*>(data_.get()));
+    }
+
+    uint8_t* bytes() { return data_.get(); }
+    const uint8_t* bytes() const { return data_.get(); }
+
+    size_t size() const { return count_; }
+    bool empty() const { return count_ == 0; }
+
+private:
+    std::unique_ptr<uint8_t[], PerfStatAlignedByteDeleter> data_;
+    size_t count_ = 0;
+};
 
 class ShardBuffer {
 public:
@@ -277,9 +421,11 @@ public:
     void resize(size_t count, uint32_t maxSlots) {
         shardSize_ = ShmShardSize(maxSlots);
         maxSlots_ = maxSlots;
-        data_ = std::make_unique<uint8_t[]>(count * shardSize_);
+        const size_t bytes = count * shardSize_;
+        data_.reset(static_cast<uint8_t*>(::operator new[](
+            bytes, std::align_val_t{alignof(PerfStat)})));
         count_ = count;
-        std::memset(data_.get(), 0, count * shardSize_);
+        std::memset(data_.get(), 0, bytes);
     }
 
     PerfStat* stats(size_t shardIdx) {
@@ -303,7 +449,7 @@ public:
     bool empty() const { return count_ == 0; }
 
 private:
-    std::unique_ptr<uint8_t[]> data_;
+    std::unique_ptr<uint8_t[], PerfStatAlignedByteDeleter> data_;
     size_t count_ = 0;
     size_t shardSize_ = 0;
     uint32_t maxSlots_ = 0;

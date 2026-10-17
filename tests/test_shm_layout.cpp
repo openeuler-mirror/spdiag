@@ -13,13 +13,15 @@
 #include <gtest/gtest.h>
 #include "spdiag/shm_layout.h"
 #include <cstring>
+#include <limits>
 
 TEST(ShmLayoutTest, PerfStatAlignment) {
     EXPECT_EQ(alignof(SpDiag::PerfStat), 64u);
 }
 
 TEST(ShmLayoutTest, ShmMagic) {
-    EXPECT_EQ(SpDiag::shmMagic, 0x50455246u);
+    EXPECT_EQ(SpDiag::shmMagic, 0x53504447u);
+    EXPECT_NE(SpDiag::shmMagic, 0x50455246u);
 }
 
 TEST(ShmLayoutTest, Constants) {
@@ -28,6 +30,58 @@ TEST(ShmLayoutTest, Constants) {
     EXPECT_EQ(SpDiag::maxTopN, 100u);
 #endif
     EXPECT_EQ(SpDiag::nameLen, 64u);
+    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 1u);
+}
+
+TEST(ShmLayoutTest, FeatureMaskMatchesCompileTimeLayout) {
+    uint8_t expected = 0;
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    expected |= SpDiag::shmFeaturePercentile;
+#endif
+#ifdef SPDIAG_ENABLE_PERFLOG
+    expected |= SpDiag::shmFeaturePerfLog;
+#endif
+    EXPECT_EQ(SpDiag::CurrentShmFeatureMask(), expected);
+}
+
+TEST(ShmLayoutTest, ComputesExpectedOffsetsAndTotalSize) {
+    SpDiag::ShmLayoutDescriptor layout;
+    ASSERT_TRUE(SpDiag::ComputeShmLayout(256, 8, 4, layout));
+    EXPECT_EQ(layout.registryOffset, sizeof(SpDiag::ShmHeader));
+    EXPECT_EQ(layout.registryOffset % alignof(SpDiag::ProgramEntry), 0u);
+    EXPECT_GT(layout.keyNamesOffset, layout.registryOffset);
+    EXPECT_GT(layout.keyModuleNamesOffset, layout.keyNamesOffset);
+    EXPECT_GT(layout.activeBitmapOffset, layout.keyModuleNamesOffset);
+    EXPECT_GT(layout.shardsOffset, layout.activeBitmapOffset);
+    EXPECT_GT(layout.globalAccumOffset, layout.shardsOffset);
+    EXPECT_GT(layout.totalSize, layout.globalAccumOffset);
+    EXPECT_EQ(layout.shardsOffset % alignof(SpDiag::PerfStat), 0u);
+    EXPECT_EQ(layout.globalAccumOffset % alignof(SpDiag::PerfStat), 0u);
+    EXPECT_EQ(SpDiag::ShmShardSize(256) % alignof(SpDiag::PerfStat), 0u);
+}
+
+TEST(ShmLayoutTest, ShardBufferPreservesPerfStatAlignment) {
+    SpDiag::ShardBuffer shards;
+    shards.resize(4, 256);
+    for (size_t i = 0; i < shards.size(); ++i) {
+        const auto address = reinterpret_cast<uintptr_t>(shards.stats(i));
+        EXPECT_EQ(address % alignof(SpDiag::PerfStat), 0u);
+    }
+}
+
+TEST(ShmLayoutTest, RejectsZeroDimensions) {
+    SpDiag::ShmLayoutDescriptor layout;
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(0, 8, 4, layout));
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 0, 4, layout));
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 0, layout));
+}
+
+TEST(ShmLayoutTest, RejectsOverflowingDimensions) {
+    SpDiag::ShmLayoutDescriptor layout;
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(
+        std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max(), layout));
 }
 
 TEST(ShmLayoutTest, ProgramEntryFields) {
@@ -136,14 +190,15 @@ TEST(ShmLayoutTest, KeyNamesLayoutRoundTrip) {
         SLOTS * SpDiag::nameLen +
         SLOTS * SpDiag::nameLen;
 
-    std::vector<uint8_t> buffer(BUF_SIZE, 0);
-    SpDiag::ShmHeader* hdr = reinterpret_cast<SpDiag::ShmHeader*>(buffer.data());
+    alignas(SpDiag::ShmHeader) uint8_t buffer[BUF_SIZE]{};
+    SpDiag::ShmHeader* hdr = static_cast<SpDiag::ShmHeader*>(
+        static_cast<void*>(buffer));
     hdr->registryOffset = sizeof(SpDiag::ShmHeader);
     hdr->keyNamesOffset = hdr->registryOffset + SpDiag::maxProgramsDefault * sizeof(SpDiag::ProgramEntry);
     hdr->keyModuleNamesOffset = hdr->keyNamesOffset + SLOTS * SpDiag::nameLen;
 
-    char* keyNames = reinterpret_cast<char*>(buffer.data() + hdr->keyNamesOffset);
-    char* keyModuleNames = reinterpret_cast<char*>(buffer.data() + hdr->keyModuleNamesOffset);
+    char* keyNames = reinterpret_cast<char*>(buffer + hdr->keyNamesOffset);
+    char* keyModuleNames = reinterpret_cast<char*>(buffer + hdr->keyModuleNamesOffset);
 
     std::strncpy(keyNames + 3 * SpDiag::nameLen, "TestPoint", SpDiag::nameLen - 1);
     std::strncpy(keyModuleNames + 3 * SpDiag::nameLen, "TestModule", SpDiag::nameLen - 1);

@@ -37,6 +37,7 @@ public:
     void WriteShard(uint32_t programIndex, uint32_t coreIndex, const void* data, size_t size);
 
     size_t TotalSize() const;
+    size_t ObjectSize() const;
 
 private:
     ShmHandle   handle_;

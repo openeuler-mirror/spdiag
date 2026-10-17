@@ -224,14 +224,13 @@ TEST_F(ShmReaderTest, RapidSnapshotsAreConsistent) {
     EXPECT_EQ(tick1, tick2);
     EXPECT_GT(tick1, 0u);
 
-    // globalOut 出参：globalAccumCount>0 时按契约填充 globalAccumCount*sizeof(PerfStat) 字节。
-    std::vector<uint8_t> globalData;
+    // globalOut 出参：globalAccumCount>0 时按契约填充对齐的 PerfStat 数组。
+    PerfStatBuffer globalData;
     ShardBuffer snap3;
     ASSERT_TRUE(reader.SnapshotShards(snap3, &globalData));
     const ShmHeader& hdr = reader.Header();
     if (hdr.globalAccumCount > 0u) {
-        EXPECT_EQ(globalData.size(),
-                  static_cast<size_t>(hdr.globalAccumCount) * sizeof(PerfStat));
+        EXPECT_EQ(globalData.size(), hdr.globalAccumCount);
     }
     reader.Close();
 }

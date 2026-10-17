@@ -42,6 +42,8 @@
 #include "platform.h"
 
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sched.h>
@@ -153,50 +155,91 @@ static inline uint64_t TicksToNs(uint64_t ticks) {
 // ─── 共享内存（不变）──────────────────────────────────────────────
 ShmHandle ShmCreate(const std::string& name, size_t size) {
     ShmHandle handle;
-    int fd = shm_open(name.c_str(), O_RDWR | O_CREAT, 0666);
-    if (fd == -1) return handle;
+    int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
+                      0666);
+    if (fd == -1) {
+        handle.errorCode = errno;
+        return handle;
+    }
     if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
+        handle.errorCode = errno;
         close(fd);
+        shm_unlink(name.c_str());
         return handle;
     }
     void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
                       MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
+        handle.errorCode = errno;
         close(fd);
+        shm_unlink(name.c_str());
         return handle;
     }
     handle.baseAddr   = addr;
     handle.mappedSize = size;
+    handle.objectSize = size;
     handle.fd         = fd;
     return handle;
 }
 
 ShmHandle ShmOpenReadOnly(const std::string& name, size_t size) {
     ShmHandle handle;
-    int fd = shm_open(name.c_str(), O_RDONLY, 0);
-    if (fd == -1) return handle;
+    int fd = shm_open(name.c_str(), O_RDONLY | O_CLOEXEC, 0);
+    if (fd == -1) {
+        handle.errorCode = errno;
+        return handle;
+    }
+    struct stat st {};
+    if (fstat(fd, &st) != 0) {
+        handle.errorCode = errno;
+        close(fd);
+        return handle;
+    }
+    if (st.st_size < 0 || static_cast<uint64_t>(st.st_size) < size) {
+        handle.errorCode = EINVAL;
+        close(fd);
+        return handle;
+    }
     void* addr = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
+        handle.errorCode = errno;
         close(fd);
         return handle;
     }
     handle.baseAddr   = addr;
     handle.mappedSize = size;
+    handle.objectSize = static_cast<size_t>(st.st_size);
     handle.fd         = fd;
     return handle;
 }
 
 ShmHandle ShmOpenReadWrite(const std::string& name, size_t size) {
     ShmHandle handle;
-    int fd = shm_open(name.c_str(), O_RDWR, 0);
-    if (fd == -1) return handle;
+    int fd = shm_open(name.c_str(), O_RDWR | O_CLOEXEC, 0);
+    if (fd == -1) {
+        handle.errorCode = errno;
+        return handle;
+    }
+    struct stat st {};
+    if (fstat(fd, &st) != 0) {
+        handle.errorCode = errno;
+        close(fd);
+        return handle;
+    }
+    if (st.st_size < 0 || static_cast<uint64_t>(st.st_size) < size) {
+        handle.errorCode = EINVAL;
+        close(fd);
+        return handle;
+    }
     void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
+        handle.errorCode = errno;
         close(fd);
         return handle;
     }
     handle.baseAddr   = addr;
     handle.mappedSize = size;
+    handle.objectSize = static_cast<size_t>(st.st_size);
     handle.fd         = fd;
     return handle;
 }
@@ -211,6 +254,7 @@ void ShmClose(ShmHandle& handle) {
         handle.fd = -1;
     }
     handle.mappedSize = 0;
+    handle.objectSize = 0;
 }
 
 void ShmDestroy(const std::string& name) {

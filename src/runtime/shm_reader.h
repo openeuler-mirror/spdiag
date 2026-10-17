@@ -34,7 +34,8 @@ public:
     const PerfStat* ReadGlobalAccum() const;
     // globalOut（可选）非空时，在同一 dumpSeqNo 偶/奇窗口内一并快照全局区
     // （globalAccumCount * sizeof(PerfStat) 原始字节，无 coreId 前缀）。
-    bool SnapshotShards(ShardBuffer& out, std::vector<uint8_t>* globalOut = nullptr) const;
+    bool SnapshotShards(ShardBuffer& out,
+                        PerfStatBuffer* globalOut = nullptr) const;
 
 private:
     ShmHandle handle_;

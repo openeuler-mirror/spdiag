@@ -84,8 +84,9 @@ PerfStat* ShmWriter::GlobalAccumPtr() {
     if (hdr == nullptr || hdr->globalAccumCount == 0) {
         return nullptr;
     }
-    return reinterpret_cast<PerfStat*>(
-        reinterpret_cast<uint8_t*>(handle_.baseAddr) + hdr->globalAccumOffset);
+    return static_cast<PerfStat*>(static_cast<void*>(
+        reinterpret_cast<uint8_t*>(handle_.baseAddr) +
+        hdr->globalAccumOffset));
 }
 
 void ShmWriter::WriteHeader(const ShmHeader& hdr) {
@@ -126,6 +127,10 @@ void ShmWriter::WriteShard(uint32_t programIndex, uint32_t coreIndex, const void
 
 size_t ShmWriter::TotalSize() const {
     return totalSize_;
+}
+
+size_t ShmWriter::ObjectSize() const {
+    return handle_.objectSize;
 }
 
 }
