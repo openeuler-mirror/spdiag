@@ -17,6 +17,8 @@
 #include <vector>
 #include <cstdint>
 #include <cmath>
+#include <algorithm>
+#include <functional>
 
 namespace SpDiag {
 
@@ -55,6 +57,26 @@ inline void CalculatePercentiles(
         p9999Ns = topN[p9999Index];
         hasP9999 = true;
     }
+}
+
+inline void CalculatePercentilesFromMinHeap(
+    const uint64_t* heap, size_t heapSize, uint64_t totalTickCount,
+    uint64_t& p99Ns, bool& hasP99,
+    uint64_t& p999Ns, bool& hasP999,
+    uint64_t& p9999Ns, bool& hasP9999)
+{
+    std::vector<uint64_t> sortedTopN;
+    sortedTopN.reserve(heapSize);
+    for (size_t i = 0; i < heapSize; ++i) {
+        if (heap[i] > 0) {
+            sortedTopN.push_back(heap[i]);
+        }
+    }
+    std::sort(sortedTopN.begin(), sortedTopN.end(), std::greater<uint64_t>());
+    CalculatePercentiles(sortedTopN, totalTickCount,
+                         p99Ns, hasP99,
+                         p999Ns, hasP999,
+                         p9999Ns, hasP9999);
 }
 
 }

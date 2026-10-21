@@ -14,8 +14,11 @@
 
 #include <gtest/gtest.h>
 #include "src/manager/percentile_calculator.h"
+#include <algorithm>
+#include <iterator>
 
 using SpDiag::CalculatePercentiles;
+using SpDiag::CalculatePercentilesFromMinHeap;
 
 TEST(PercentileTest, NormalCalculation) {
     std::vector<uint64_t> topN = {500, 400, 300, 200, 100};
@@ -85,6 +88,27 @@ TEST(PercentileTest, LargeTickCount) {
     EXPECT_FALSE(hasP999);
     EXPECT_TRUE(hasP9999);
     EXPECT_EQ(900u, p9999Ns);
+}
+
+TEST(PercentileTest, CalculatesFromUnsortedMinHeapWithoutMutatingInput) {
+    uint64_t heap[] = {100, 400, 300, 900, 800};
+    const std::vector<uint64_t> original(std::begin(heap), std::end(heap));
+    uint64_t p99Ns, p999Ns, p9999Ns;
+    bool hasP99, hasP999, hasP9999;
+
+    CalculatePercentilesFromMinHeap(
+        heap, std::size(heap), 400,
+        p99Ns, hasP99,
+        p999Ns, hasP999,
+        p9999Ns, hasP9999);
+
+    EXPECT_TRUE(hasP99);
+    EXPECT_EQ(100u, p99Ns);
+    EXPECT_TRUE(hasP999);
+    EXPECT_EQ(900u, p999Ns);
+    EXPECT_TRUE(hasP9999);
+    EXPECT_EQ(900u, p9999Ns);
+    EXPECT_TRUE(std::equal(original.begin(), original.end(), std::begin(heap)));
 }
 
 #endif
