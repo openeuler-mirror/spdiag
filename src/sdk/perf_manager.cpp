@@ -19,6 +19,7 @@
 #include "shm_probe.h"
 #include "global_perf_point_factory.h"
 #include "registry_file_guard.h"
+#include <cstddef>
 #include <chrono>
 #include <thread>
 #include <cstring>
@@ -139,64 +140,14 @@ void PerfManager::EnsureInitialized() {
                     : static_cast<uint32_t>(PerfKeyDefined::PERF_KEY_DEFINED_COUNT);
     }
 
-    shmWriter_ = std::make_unique<ShmWriter>();
-
-    ShmHandle probeHandle = Platform::ShmOpenReadOnly(shmName_, sizeof(ShmHeader));
-    if (probeHandle.baseAddr == nullptr) {
-        shmWriter_.reset();
-        probeDone_.store(true, std::memory_order_release);
-        StartShmWatcher();
-        return;
-    }
-
-    const ShmHeader* probeHdr = reinterpret_cast<const ShmHeader*>(probeHandle.baseAddr);
-    if (probeHdr->magic != shmMagic || probeHdr->shmTotalSize == 0) {
-        std::cerr << "spdiag: invalid shared memory. Please run 'spdiag start' first." << std::endl;
-        Platform::ShmClose(probeHandle);
-        shmWriter_.reset();
-        probeDone_.store(true, std::memory_order_release);
-        StartShmWatcher();
-        return;
-    }
-
-    size_t existingSize = probeHdr->shmTotalSize;
-    Platform::ShmClose(probeHandle);
-
-    if (!shmWriter_->Open(shmName_, existingSize)) {
-        std::cerr << "spdiag: failed to connect to shared memory." << std::endl;
-        shmWriter_.reset();
-        probeDone_.store(true, std::memory_order_release);
-        StartShmWatcher();
-        return;
-    }
-
-    const ShmHeader* existingHdr = shmWriter_->Header();
-    numCores_ = existingHdr->numCores;
-    levelGate_ = existingHdr->levelGate;
-    mode_ = static_cast<RunMode>(existingHdr->mode);
-    generation_ = existingHdr->generation;
-#ifdef SPDIAG_ENABLE_PERFLOG
-    perflogEnabled_.store(existingHdr->perflogEnabled != 0, std::memory_order_relaxed);
-#endif
-
-    shardManager_ = PerfShardManager();
-    shardManager_.Init(numCores_);
-
-    if (programName_.empty()) {
-        const char* autoName = detail::AutoProgramName();
-        if (autoName) {
-            programName_ = autoName;
-        } else {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "proc_%d", getpid());
-
-            programName_ = buf;
+    auto probe = ProbeShmHeader(shmName_);
+    if (!probe.IsCompatible() || !ConnectToExistingShm(0)) {
+        if (probe.status != ShmProbeStatus::ABSENT) {
+            std::cerr << "spdiag: incompatible shared memory: "
+                      << probe.detail << std::endl;
         }
-    }
-
-    if (!ConnectToExistingShm(0)) {
-        SPDIAG_LOG_ERROR(LogModule::SDK, "failed to connect to shared memory. Please run 'spdiag start' first.");
         probeDone_.store(true, std::memory_order_release);
+        StartShmWatcher();
         return;
     }
 
@@ -223,6 +174,12 @@ bool PerfManager::ConnectToExistingShm(uint32_t dumpIntervalHint) {
     }
 
     const ShmHeader* existingHdr = shmWriter_->Header();
+    if (shmWriter_->TotalSize() != shmWriter_->ObjectSize() ||
+        !ValidateShmHeader(*existingHdr,
+                           shmWriter_->TotalSize()).IsCompatible()) {
+        shmWriter_.reset();
+        return false;
+    }
 
     numCores_ = existingHdr->numCores;
     levelGate_ = existingHdr->levelGate;
@@ -234,6 +191,17 @@ bool PerfManager::ConnectToExistingShm(uint32_t dumpIntervalHint) {
 
     shardManager_ = PerfShardManager();
     shardManager_.Init(numCores_);
+
+    if (programName_.empty()) {
+        const char* autoName = detail::AutoProgramName();
+        if (autoName != nullptr) {
+            programName_ = autoName;
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "proc_%d", getpid());
+            programName_ = buf;
+        }
+    }
 
     uint32_t dumpInterval = (dumpIntervalHint > 0) ? dumpIntervalHint : existingHdr->dumpIntervalMs;
 
@@ -309,15 +277,21 @@ void PerfManager::StartShmWatcher() {
             if (ret < 0) break;
             if (ret == 0) continue;
 
-            char buf[4096];
+            alignas(struct inotify_event) char buf[4096];
             ssize_t len = read(fd, buf, sizeof(buf));
             if (len <= 0) continue;
 
             const char* target = "spdiag_shm_default";
-            for (const struct inotify_event* ev = reinterpret_cast<const struct inotify_event*>(buf);
-                 reinterpret_cast<const char*>(ev) < buf + len;
-                 ev = reinterpret_cast<const struct inotify_event*>(
-                     reinterpret_cast<const char*>(ev) + sizeof(struct inotify_event) + ev->len)) {
+            const char* cursor = buf;
+            const char* end = buf + len;
+            while (end - cursor >=
+                   static_cast<ptrdiff_t>(sizeof(struct inotify_event))) {
+                const auto* ev = static_cast<const struct inotify_event*>(
+                    static_cast<const void*>(cursor));
+                const size_t eventSize = sizeof(struct inotify_event) + ev->len;
+                if (eventSize > static_cast<size_t>(end - cursor)) {
+                    break;
+                }
                 if (ev->len > 0 && ev->name[0] != '\0' && std::strcmp(ev->name, target) == 0) {
                     if (ev->mask & IN_CREATE) {
                         probeDone_.store(false, std::memory_order_release);
@@ -326,6 +300,7 @@ void PerfManager::StartShmWatcher() {
                     }
                     // 不退出循环，持续监听后续事件
                 }
+                cursor += eventSize;
             }
         }
         inotify_rm_watch(fd, wd);
@@ -352,7 +327,8 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         return false;
     }
 
-    ProgramEntry* registry = reinterpret_cast<ProgramEntry*>(base + hdr->registryOffset);
+    ProgramEntry* registry = static_cast<ProgramEntry*>(
+        static_cast<void*>(base + hdr->registryOffset));
 
     uint32_t baseSlot = 0;
     int32_t pid = static_cast<int32_t>(getpid());

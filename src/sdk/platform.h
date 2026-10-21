@@ -20,7 +20,9 @@ namespace SpDiag {
 struct ShmHandle {
     void*    baseAddr   = nullptr;
     size_t   mappedSize = 0;
+    size_t   objectSize = 0;
     int      fd         = -1;
+    int      errorCode  = 0;
 };
 
 namespace Platform {

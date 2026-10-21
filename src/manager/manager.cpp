@@ -308,7 +308,7 @@ CollectResult SpDiagManager::CollectAndAggregate(const Cli::CliConfig& config) {
         reinterpret_cast<const char(*)[nameLen]>(result.keyModuleNameData.data()),
         result.shards, result.numCores,
         result.globalAccumData.empty()
-            ? nullptr : reinterpret_cast<const PerfStat*>(result.globalAccumData.data()),
+            ? nullptr : result.globalAccumData.data(),
         result.globalAccumCount);
     result.aggregated = aggregator.Results();
 
@@ -406,21 +406,15 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
 
     uint32_t cfgMaxSlots = (config.maxSlots > 0) ? config.maxSlots : PerfConfig().maxSlots;
     uint32_t cfgMaxPrograms = (config.maxPrograms > 0) ? config.maxPrograms : maxProgramsDefault;
-    size_t registryOffset = sizeof(ShmHeader);
-    size_t keyNamesOffset = registryOffset + sizeof(ProgramEntry) * cfgMaxPrograms;
-    size_t keyModuleNamesOffset = keyNamesOffset + cfgMaxSlots * nameLen;
-    size_t activeBitmapOffset = keyModuleNamesOffset + cfgMaxSlots * nameLen;
-    size_t shardsOffset = activeBitmapOffset + cfgMaxSlots;
-    size_t shardSize = ShmShardSize(cfgMaxSlots);
-    size_t shardsEnd = shardsOffset + numCores * shardSize;
-    // 全局 PerfPoint 累加区：紧跟在 shard 区之后，大小 = globalAccumCount * sizeof(PerfStat)。
-    uint32_t globalAccumCount = cfgMaxSlots;   // = MAX_GLOBAL_POINTS
-    size_t globalAccumOffset = shardsEnd;
-    size_t globalAccumBytes = static_cast<size_t>(globalAccumCount) * sizeof(PerfStat);
-    size_t totalSize = globalAccumOffset + globalAccumBytes;
+    ShmLayoutDescriptor layout;
+    if (!ComputeShmLayout(cfgMaxSlots, cfgMaxPrograms, numCores, layout)) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER,
+                         "invalid or overflowing shared-memory layout");
+        return false;
+    }
 
     ShmWriter writer;
-    if (!writer.Create(config.shmName, totalSize)) {
+    if (!writer.Create(config.shmName, layout.totalSize)) {
         SPDIAG_LOG_ERROR(LogModule::MANAGER, "Failed to create shared memory: %s", config.shmName.c_str());
         return false;
     }
@@ -430,6 +424,8 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
     hdr.version = 3;
     hdr.mode = 0;
     hdr.levelGate = (config.levelGate > 0) ? config.levelGate : 4;
+    hdr.reserved[0] = shmLayoutAbiRevision;
+    hdr.reserved[1] = CurrentShmFeatureMask();
     hdr.maxSlots = cfgMaxSlots;
     hdr.maxPrograms = cfgMaxPrograms;
     hdr.registeredPrograms = 0;
@@ -441,14 +437,14 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
     }
     hdr.dumpSeqNo.store(0, std::memory_order_relaxed);
     hdr.lastDumpTimestampNs = 0;
-    hdr.shmTotalSize = totalSize;
-    hdr.registryOffset = registryOffset;
-    hdr.keyNamesOffset = keyNamesOffset;
-    hdr.keyModuleNamesOffset = keyModuleNamesOffset;
-    hdr.activeBitmapOffset = activeBitmapOffset;
-    hdr.shardsOffset = shardsOffset;
-    hdr.globalAccumOffset = globalAccumOffset;
-    hdr.globalAccumCount = globalAccumCount;
+    hdr.shmTotalSize = layout.totalSize;
+    hdr.registryOffset = layout.registryOffset;
+    hdr.keyNamesOffset = layout.keyNamesOffset;
+    hdr.keyModuleNamesOffset = layout.keyModuleNamesOffset;
+    hdr.activeBitmapOffset = layout.activeBitmapOffset;
+    hdr.shardsOffset = layout.shardsOffset;
+    hdr.globalAccumOffset = layout.globalAccumOffset;
+    hdr.globalAccumCount = cfgMaxSlots;
 #ifdef SPDIAG_ENABLE_PERFLOG
     hdr.perflogEnabled = config.perflogStart ? 1 : 0;
     if (config.perflogStart) {
@@ -469,7 +465,8 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
     writer.WriteHeader(hdr);
 
     auto* base = reinterpret_cast<uint8_t*>(writer.Header());
-    std::memset(base + registryOffset, 0, totalSize - registryOffset);
+    std::memset(base + layout.registryOffset, 0,
+                layout.totalSize - layout.registryOffset);
 
     writer.Release();
     return true;

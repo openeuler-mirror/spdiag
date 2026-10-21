@@ -11,6 +11,7 @@
  */
 
 #include "shm_reader.h"
+#include "sdk/shm_probe.h"
 #include <cstring>
 #include <random>
 #include <algorithm>
@@ -24,23 +25,18 @@ ShmReader::~ShmReader() {
 }
 
 bool ShmReader::Open(const std::string& shmName) {
-    handle_ = Platform::ShmOpenReadOnly(shmName, sizeof(ShmHeader));
-    if (handle_.baseAddr == nullptr) {
+    auto probe = ProbeShmHeader(shmName);
+    if (!probe.IsCompatible()) {
         return false;
     }
 
+    handle_ = Platform::ShmOpenReadOnly(shmName, probe.totalSize);
+    if (handle_.baseAddr == nullptr) {
+        return false;
+    }
     const ShmHeader* hdr = reinterpret_cast<const ShmHeader*>(handle_.baseAddr);
-    if (hdr->magic != shmMagic) {
+    if (!ValidateMappedShmHeader(*hdr, handle_).IsCompatible()) {
         Platform::ShmClose(handle_);
-        handle_.baseAddr = nullptr;
-        return false;
-    }
-
-    size_t fullSize = hdr->shmTotalSize;
-    Platform::ShmClose(handle_);
-
-    handle_ = Platform::ShmOpenReadOnly(shmName, fullSize);
-    if (handle_.baseAddr == nullptr) {
         return false;
     }
 
@@ -62,8 +58,9 @@ const ShmHeader& ShmReader::Header() const {
 
 const ProgramEntry* ShmReader::ReadProgramRegistry() const {
     const ShmHeader& hdr = Header();
-    return reinterpret_cast<const ProgramEntry*>(
-        reinterpret_cast<const uint8_t*>(handle_.baseAddr) + hdr.registryOffset);
+    return static_cast<const ProgramEntry*>(static_cast<const void*>(
+        reinterpret_cast<const uint8_t*>(handle_.baseAddr) +
+        hdr.registryOffset));
 }
 
 const char (*ShmReader::ReadKeyNames() const)[nameLen] {
@@ -83,11 +80,13 @@ const PerfStat* ShmReader::ReadGlobalAccum() const {
     if (hdr.globalAccumCount == 0) {
         return nullptr;
     }
-    return reinterpret_cast<const PerfStat*>(
-        reinterpret_cast<const uint8_t*>(handle_.baseAddr) + hdr.globalAccumOffset);
+    return static_cast<const PerfStat*>(static_cast<const void*>(
+        reinterpret_cast<const uint8_t*>(handle_.baseAddr) +
+        hdr.globalAccumOffset));
 }
 
-bool ShmReader::SnapshotShards(ShardBuffer& out, std::vector<uint8_t>* globalOut) const {
+bool ShmReader::SnapshotShards(ShardBuffer& out,
+                              PerfStatBuffer* globalOut) const {
     const ShmHeader& hdr = Header();
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -126,10 +125,10 @@ bool ShmReader::SnapshotShards(ShardBuffer& out, std::vector<uint8_t>* globalOut
         // 同窗口快照全局 PerfPoint 累加区（无 coreId 前缀，原始 PerfStat[] 字节）。
         if (globalOut != nullptr && hdr.globalAccumCount > 0) {
             size_t globalBytes = static_cast<size_t>(hdr.globalAccumCount) * sizeof(PerfStat);
-            globalOut->resize(globalBytes);
+            globalOut->resize(hdr.globalAccumCount);
             const void* gsrc = reinterpret_cast<const uint8_t*>(handle_.baseAddr)
                                + hdr.globalAccumOffset;
-            std::memcpy(globalOut->data(), gsrc, globalBytes);
+            std::memcpy(globalOut->bytes(), gsrc, globalBytes);
         }
 
         // 阶段 3：校验 seqNo 是否变化

@@ -365,7 +365,7 @@ TEST_F(GlobalPerfPointTest, GlobalAggregatesAlongsideLocal) {
     ASSERT_TRUE(reader.Open(kShmName));
     const ShmHeader& hdr = reader.Header();
     ShardBuffer shards;
-    std::vector<uint8_t> globalData;
+    PerfStatBuffer globalData;
     ASSERT_TRUE(reader.SnapshotShards(shards, &globalData));
     const ProgramEntry* programs = reader.ReadProgramRegistry();
     const char (*keyNames)[nameLen] = reader.ReadKeyNames();
@@ -373,8 +373,7 @@ TEST_F(GlobalPerfPointTest, GlobalAggregatesAlongsideLocal) {
     Aggregator agg;
     agg.Aggregate(programs, hdr.registeredPrograms, keyNames, keyModNames,
                   shards, hdr.numCores,
-                  globalData.empty() ? nullptr
-                                     : reinterpret_cast<const PerfStat*>(globalData.data()),
+                  globalData.empty() ? nullptr : globalData.data(),
                   hdr.globalAccumCount);
     reader.Close();
 
