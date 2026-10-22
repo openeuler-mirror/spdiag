@@ -13,13 +13,16 @@
 #include <gtest/gtest.h>
 #include "src/cli/display_engine.h"
 #include "src/runtime/data_pipeline.h"
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <map>
 #include <thread>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 using namespace SpDiag;
 using namespace SpDiag::Cli;
@@ -73,6 +76,72 @@ std::string CaptureShowObMemory(
 }
 
 } // namespace
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+TEST(DisplayEngineTest, ShowDetailSortsPerCoreMinHeapBeforePercentiles) {
+    ShmInfo info;
+    info.numCores = 1;
+    info.maxSlots = 2;
+    info.maxPrograms = 1;
+
+    ShardBuffer shards;
+    shards.resize(info.numCores, info.maxSlots);
+    PerfStat& stat = shards.stats(0)[1];
+    stat.slotIndex = 1;
+    stat.tickCount = 400;
+    stat.backGoodCount = 400;
+    stat.totalTimeNs = 4000;
+    stat.minTimeNs = 1;
+    stat.maxTimeNs = 999;
+    const uint64_t heap[] = {111, 444, 333, 999, 888};
+    std::copy(std::begin(heap), std::end(heap), stat.topN);
+    stat.topNCount = static_cast<uint8_t>(std::size(heap));
+
+    ProgramEntry program{};
+    std::strncpy(program.name, "detail-test", sizeof(program.name) - 1);
+    program.baseSlot = 0;
+    program.slotCount = info.maxSlots;
+    program.numCores = info.numCores;
+    program.active = 1;
+
+    char pointNames[2][nameLen]{};
+    char moduleNames[2][nameLen]{};
+    std::strncpy(pointNames[1], "DetailPoint", nameLen - 1);
+    std::strncpy(moduleNames[1], "DetailModule", nameLen - 1);
+
+    DisplayEngine engine;
+    DisplayOptions options;
+    options.coreStart = 0;
+    options.coreEnd = 0;
+
+    std::ostringstream output;
+    auto* oldCout = std::cout.rdbuf(output.rdbuf());
+    engine.ShowDetail(info, shards, &program, 1, pointNames, moduleNames,
+                      options);
+    std::cout.rdbuf(oldCout);
+
+    std::istringstream lines(output.str());
+    std::string line;
+    bool found = false;
+    while (std::getline(lines, line)) {
+        if (line.find("DetailModule.DetailPoint") == std::string::npos) {
+            continue;
+        }
+        found = true;
+        std::istringstream cells(line);
+        std::vector<std::string> values;
+        for (std::string value; cells >> value;) {
+            values.push_back(value);
+        }
+        ASSERT_GE(values.size(), 3u);
+        EXPECT_EQ(values[values.size() - 3], "111");
+        EXPECT_EQ(values[values.size() - 2], "999");
+        EXPECT_EQ(values[values.size() - 1], "999");
+        break;
+    }
+    EXPECT_TRUE(found);
+}
+#endif
 
 TEST(DisplayEngineTest, ParseMemEntries_BasicFields) {
     auto outputs = MakeOutput({
