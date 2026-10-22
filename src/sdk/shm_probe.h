@@ -58,10 +58,16 @@ inline ShmProbeResult ValidateShmHeader(const ShmHeader& hdr,
         result.detail = "registered program count exceeds capacity";
         return result;
     }
+    if (hdr.perCoreTopNCapacity < defaultPerCoreTopN ||
+        hdr.perCoreTopNCapacity > maxPerCoreTopN) {
+        result.status = ShmProbeStatus::INCOMPATIBLE;
+        result.detail = "per-core Top-N capacity is out of range";
+        return result;
+    }
 
     ShmLayoutDescriptor expected;
     if (!ComputeShmLayout(hdr.maxSlots, hdr.maxPrograms, hdr.numCores,
-                          expected)) {
+                          expected, hdr.perCoreTopNCapacity)) {
         result.status = ShmProbeStatus::MALFORMED;
         result.detail = "layout dimensions are invalid or overflow";
         return result;

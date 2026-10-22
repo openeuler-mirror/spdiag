@@ -16,6 +16,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
+#include <vector>
 #include "spdiag/perf_shard.h"
 #include "spdiag/shm_layout.h"
 
@@ -38,7 +40,10 @@ public:
 private:
     void DumpLoop();
     void DoOneDump();
-    void MergeShard(void* dst, uint32_t dstMaxSlots, const LocalPerfShard& src);
+    bool ClearRequested(ShmHeader* header);
+    void MergeShard(void* dst, uint32_t dstMaxSlots,
+                    const PerfStat* srcStats,
+                    const uint64_t* snapshotTopN);
     // 全局 PerfPoint 累加区快照+合并（须在 dumpSeqNo 持锁期内调用，单 writer 协议不变）。
     void SnapshotAndMergeGlobal();
 
@@ -48,10 +53,17 @@ private:
     uint32_t            baseOffset_;
     uint32_t            slotCount_;
     uint32_t            programIndex_;
+    uint32_t            generation_ = 0;
     std::thread         thread_;
     std::atomic<bool>   running_{false};
     std::condition_variable cv_;
     std::mutex          cvMutex_;
+    std::unique_ptr<uint64_t[]> snapshotTopN_;
+    std::unique_ptr<uint16_t[]> snapshotTopNCounts_;
+    std::unique_ptr<PerfStat[]> snapshotStats_;
+    size_t snapshotTopNSize_ = 0;
+    size_t snapshotTopNCountSize_ = 0;
+    uint32_t snapshotStatsSize_ = 0;
 };
 
 }

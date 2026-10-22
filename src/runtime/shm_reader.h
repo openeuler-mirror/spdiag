@@ -31,11 +31,11 @@ public:
     const char (*ReadKeyNames() const)[nameLen];
     const char (*ReadKeyModuleNames() const)[nameLen];
     // 全局 PerfPoint 累加区（v3）；缺省(globalAccumCount==0)返回 nullptr。直接指针读取，不做快照校验。
-    const PerfStat* ReadGlobalAccum() const;
+    const GlobalPerfStat* ReadGlobalAccum() const;
     // globalOut（可选）非空时，在同一 dumpSeqNo 偶/奇窗口内一并快照全局区
-    // （globalAccumCount * sizeof(PerfStat) 原始字节，无 coreId 前缀）。
+    // （globalAccumCount * sizeof(GlobalPerfStat) 原始字节）。
     bool SnapshotShards(ShardBuffer& out,
-                        PerfStatBuffer* globalOut = nullptr) const;
+                        GlobalPerfStatBuffer* globalOut = nullptr) const;
 
 private:
     ShmHandle handle_;

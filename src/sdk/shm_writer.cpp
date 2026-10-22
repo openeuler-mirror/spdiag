@@ -27,7 +27,6 @@ bool ShmWriter::Create(const std::string& shmName, size_t totalSize) {
     shmName_ = shmName;
     totalSize_ = totalSize;
     owner_ = true;
-    std::memset(handle_.baseAddr, 0, totalSize);
     return true;
 }
 
@@ -74,17 +73,18 @@ ShmHeader* ShmWriter::Header() {
 void* ShmWriter::ShardPtr(uint32_t programIndex, uint32_t coreIndex) {
     (void)programIndex;
     auto* hdr = Header();
-    size_t shardSize = ShmShardSize(hdr->maxSlots);
+    size_t shardSize = ShmShardSize(hdr->maxSlots,
+                                    hdr->perCoreTopNCapacity);
     size_t offset = hdr->shardsOffset + coreIndex * shardSize;
     return reinterpret_cast<uint8_t*>(handle_.baseAddr) + offset;
 }
 
-PerfStat* ShmWriter::GlobalAccumPtr() {
+GlobalPerfStat* ShmWriter::GlobalAccumPtr() {
     auto* hdr = Header();
     if (hdr == nullptr || hdr->globalAccumCount == 0) {
         return nullptr;
     }
-    return static_cast<PerfStat*>(static_cast<void*>(
+    return static_cast<GlobalPerfStat*>(static_cast<void*>(
         reinterpret_cast<uint8_t*>(handle_.baseAddr) +
         hdr->globalAccumOffset));
 }
@@ -100,6 +100,7 @@ void ShmWriter::WriteHeader(const ShmHeader& hdr) {
     dst->maxPrograms = hdr.maxPrograms;
     dst->registeredPrograms = hdr.registeredPrograms;
     dst->numCores = hdr.numCores;
+    dst->perCoreTopNCapacity = hdr.perCoreTopNCapacity;
     dst->dumpIntervalMs = hdr.dumpIntervalMs;
     dst->generation = hdr.generation;
     dst->dumpSeqNo.store(hdr.dumpSeqNo.load(std::memory_order_relaxed),

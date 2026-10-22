@@ -16,8 +16,24 @@
 #include "sdk/shm_probe.h"
 #include "sdk/shm_writer.h"
 #include "spdiag/shm_layout.h"
+#include <chrono>
+#include <thread>
 
 namespace SpDiag {
+
+namespace {
+bool AcquireDumpWindow(ShmHeader* header) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(500);
+    while (true) {
+        uint64_t expected = header->dumpSeqNo.load(std::memory_order_acquire);
+        if ((expected & 1U) == 0 && header->dumpSeqNo.compare_exchange_weak(
+                expected, expected + 1, std::memory_order_acq_rel)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+}
+}
 
 ProbeHandle SpDiagProcessor::RegisterProbe(const ProbeDesc& probeDesc) {
     return probeManager_.RegisterProbe(probeDesc);
@@ -71,7 +87,8 @@ bool SpDiagProcessor::ClearSharedMemory(const std::string& shmName) {
     }
 
     ShmHeader* hdr = writer.Header();
-    hdr->dumpSeqNo.fetch_add(1, std::memory_order_relaxed);
+    if (!AcquireDumpWindow(hdr)) return false;
+    __atomic_add_fetch(&hdr->generation, 1, __ATOMIC_RELEASE);
     std::atomic_thread_fence(std::memory_order_release);
 
     for (uint32_t i = 0; i < hdr->numCores; ++i) {

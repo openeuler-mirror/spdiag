@@ -317,7 +317,7 @@ CollectResult SpDiagManager::CollectAndAggregate(const Cli::CliConfig& config) {
 
     result.globalAccumCount = hdr.globalAccumCount;
     bool snapshotConsistent = reader.SnapshotShards(result.shards, &result.globalAccumData);
-    if (!snapshotConsistent && config.strictSnapshot) {
+    if (!snapshotConsistent) {
         reader.Close();
         return result;
     }

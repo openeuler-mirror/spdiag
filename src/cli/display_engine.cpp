@@ -345,8 +345,8 @@ void DisplayEngine::ShowDetail(const ShmInfo& info, const ShardBuffer& shards,
             entry.level = stat.level;
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-            const size_t topNCount = std::min<size_t>(stat.topNCount, maxTopN);
-            CalculatePercentilesFromMinHeap(stat.topN, topNCount, ticks,
+            const auto topN = shards.topN(s, i);
+            CalculatePercentilesFromMinHeap(topN.values, topN.count, ticks,
                 entry.p99Ns, entry.hasP99,
                 entry.p999Ns, entry.hasP999,
                 entry.p9999Ns, entry.hasP9999);

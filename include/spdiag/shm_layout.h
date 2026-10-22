@@ -19,21 +19,24 @@
 #include <memory>
 #include <new>
 #include <algorithm>
+#include <functional>
 
 namespace SpDiag {
 
-// ABI v1 uses a new magic so pre-ABI SDKs fail closed before interpreting
-// conditional ShmHeader/PerfStat layouts.
+// ABI revisions use explicit identity so SDKs fail closed before interpreting
+// incompatible conditional ShmHeader/PerfStat layouts.
 constexpr uint32_t shmMagic          = 0x53504447;  // "SPDG"
 constexpr uint32_t maxProgramsDefault = 8;
 constexpr uint32_t MAX_PERF_SLOTS    = 256;
 constexpr uint32_t MAX_GLOBAL_POINTS = MAX_PERF_SLOTS;
+constexpr uint32_t defaultPerCoreTopN = 100;
+constexpr uint32_t maxPerCoreTopN     = defaultPerCoreTopN;
 #ifdef SPDIAG_ENABLE_PERCENTILE
-constexpr uint32_t maxTopN           = 100;
+constexpr uint32_t maxTopN           = defaultPerCoreTopN;
 #endif
 constexpr uint32_t perflogTimestampCount = 100;
 constexpr uint32_t nameLen           = 64;
-constexpr uint8_t shmLayoutAbiRevision = 1;
+constexpr uint8_t shmLayoutAbiRevision = 2;
 constexpr uint8_t shmFeaturePercentile = 1U << 0;
 constexpr uint8_t shmFeaturePerfLog = 1U << 1;
 
@@ -69,10 +72,9 @@ struct alignas(64) PerfStat {
     uint64_t                  minTimeNs;
     uint64_t                  maxTimeNs;
 #ifdef SPDIAG_ENABLE_PERCENTILE
-    uint64_t                  topN[maxTopN];
-    uint8_t                   topNCount;
+    uint16_t                  topNCount;
     uint8_t                   level;
-    uint8_t                   reserved[2];
+    uint8_t                   reserved[1];
 #else
     uint8_t                   level;
     uint8_t                   reserved[3];
@@ -95,7 +97,6 @@ struct alignas(64) PerfStat {
         minTimeNs = 0;
         maxTimeNs = 0;
 #ifdef SPDIAG_ENABLE_PERCENTILE
-        std::fill_n(topN, maxTopN, 0ULL);
         topNCount = 0;
 #endif
         level = 0;
@@ -119,7 +120,6 @@ struct alignas(64) PerfStat {
         minTimeNs = other.minTimeNs;
         maxTimeNs = other.maxTimeNs;
 #ifdef SPDIAG_ENABLE_PERCENTILE
-        std::copy_n(other.topN, maxTopN, topN);
         topNCount = other.topNCount;
 #endif
         level = other.level;
@@ -134,14 +134,34 @@ struct alignas(64) PerfStat {
     }
 };
 
+// Global PerfPoint keeps its existing fixed top-100 approximation. Per-core
+// Top-N values are never stored inline in PerfStat; they live in the runtime
+// PerCoreTopNStorage addressed by ShmShardTopN(). Keeping the global-only
+// storage distinct prevents the fixed global policy from constraining K.
+struct alignas(64) GlobalPerfStat {
+    PerfStat stat;
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    uint64_t topN[maxTopN];
+#endif
+};
+
 struct LocalPerfShard {
     uint32_t coreId;
     PerfStat stats[MAX_PERF_SLOTS];
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    std::atomic<uint64_t>* perCoreTopNValues[MAX_PERF_SLOTS]{};
+    std::atomic<uint16_t>* perCoreTopNCounts[MAX_PERF_SLOTS]{};
+#endif
 
     void reset() {
         coreId = 0;
         for (uint32_t i = 0; i < MAX_PERF_SLOTS; ++i) {
             stats[i].reset();
+#ifdef SPDIAG_ENABLE_PERCENTILE
+            if (perCoreTopNCounts[i] != nullptr) {
+                perCoreTopNCounts[i]->store(0, std::memory_order_relaxed);
+            }
+#endif
         }
     }
 
@@ -179,7 +199,7 @@ static_assert(sizeof(GlobalAccum) % 64 == 0,
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
 
-inline void SiftDownMin(uint64_t* heap, uint8_t size) {
+inline void SiftDownMin(uint64_t* heap, uint32_t size) {
     uint32_t i = 0;
     while (true) {
         uint32_t left = 2 * i + 1;
@@ -199,14 +219,32 @@ inline void SiftDownMin(uint64_t* heap, uint8_t size) {
     }
 }
 
-inline void InsertTopN(PerfStat& stat, uint64_t elapsed) {
-    if (stat.topNCount < maxTopN) {
-        stat.topN[stat.topNCount] = elapsed;
-        ++stat.topNCount;
-        std::push_heap(stat.topN, stat.topN + stat.topNCount, std::greater<uint64_t>());
-    } else if (elapsed > stat.topN[0]) {
-        stat.topN[0] = elapsed;
-        SiftDownMin(stat.topN, stat.topNCount);
+struct TopNView {
+    uint64_t* values = nullptr;
+    uint16_t* count = nullptr;
+    uint32_t capacity = 0;
+};
+
+struct ConstTopNView {
+    const uint64_t* values = nullptr;
+    uint32_t count = 0;
+    uint32_t capacity = 0;
+};
+
+inline void InsertTopN(TopNView view, uint64_t elapsed) {
+    if (view.values == nullptr || view.count == nullptr || view.capacity == 0) {
+        return;
+    }
+    uint32_t count = std::min<uint32_t>(*view.count, view.capacity);
+    if (count < view.capacity) {
+        view.values[count] = elapsed;
+        ++count;
+        *view.count = static_cast<uint16_t>(count);
+        std::push_heap(view.values, view.values + count,
+                       std::greater<uint64_t>());
+    } else if (elapsed > view.values[0]) {
+        view.values[0] = elapsed;
+        SiftDownMin(view.values, count);
     }
 }
 
@@ -238,8 +276,24 @@ constexpr size_t shmShardStatsOffset = alignof(PerfStat);
 static_assert(shmShardStatsOffset >= sizeof(uint32_t),
               "shard metadata must fit before aligned PerfStat data");
 
-inline size_t ShmShardSize(uint32_t maxSlots) {
-    return shmShardStatsOffset + maxSlots * sizeof(PerfStat);
+inline size_t ShmShardTopNOffset(uint32_t maxSlots) {
+    const size_t statsEnd = shmShardStatsOffset +
+                            static_cast<size_t>(maxSlots) * sizeof(PerfStat);
+    return (statsEnd + alignof(uint64_t) - 1) & ~(alignof(uint64_t) - 1);
+}
+
+inline size_t ShmShardSize(
+    uint32_t maxSlots,
+    uint32_t perCoreTopNCapacity = defaultPerCoreTopN) {
+    size_t size = ShmShardTopNOffset(maxSlots);
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    size += static_cast<size_t>(maxSlots) * perCoreTopNCapacity *
+            sizeof(uint64_t);
+    size = (size + alignof(PerfStat) - 1) & ~(alignof(PerfStat) - 1);
+#else
+    (void)perCoreTopNCapacity;
+#endif
+    return size;
 }
 
 inline PerfStat* ShmShardStats(void* shardPtr) {
@@ -252,6 +306,29 @@ inline const PerfStat* ShmShardStats(const void* shardPtr) {
         static_cast<const uint8_t*>(shardPtr) + shmShardStatsOffset));
 }
 
+#ifdef SPDIAG_ENABLE_PERCENTILE
+inline TopNView ShmShardTopN(void* shardPtr, uint32_t slot,
+                             uint32_t maxSlots,
+                             uint32_t perCoreTopNCapacity) {
+    PerfStat* stats = ShmShardStats(shardPtr);
+    auto* base = static_cast<uint64_t*>(static_cast<void*>(
+        static_cast<uint8_t*>(shardPtr) + ShmShardTopNOffset(maxSlots)));
+    return {base + static_cast<size_t>(slot) * perCoreTopNCapacity,
+            &stats[slot].topNCount, perCoreTopNCapacity};
+}
+
+inline ConstTopNView ShmShardTopN(const void* shardPtr, uint32_t slot,
+                                  uint32_t maxSlots,
+                                  uint32_t perCoreTopNCapacity) {
+    const PerfStat* stats = ShmShardStats(shardPtr);
+    const auto* base = static_cast<const uint64_t*>(static_cast<const void*>(
+        static_cast<const uint8_t*>(shardPtr) + ShmShardTopNOffset(maxSlots)));
+    return {base + static_cast<size_t>(slot) * perCoreTopNCapacity,
+            std::min<uint32_t>(stats[slot].topNCount, perCoreTopNCapacity),
+            perCoreTopNCapacity};
+}
+#endif
+
 struct ShmHeader {
     uint32_t                magic;
     uint32_t                version = 3;
@@ -262,6 +339,7 @@ struct ShmHeader {
     uint32_t                maxPrograms;
     uint32_t                registeredPrograms;
     uint32_t                numCores;
+    uint32_t                perCoreTopNCapacity = defaultPerCoreTopN;
     uint32_t                dumpIntervalMs;
     uint32_t                generation;     // 每次 CreateShm 递增，供 SDK 检测 SHM 重启
     // dumpSeqNo 偶数/奇数锁协议：偶数=空闲，奇数=持锁中。
@@ -325,22 +403,50 @@ inline bool CheckedAlignUp(size_t value, size_t alignment, size_t& result) {
     return CheckedSizeAdd(value, alignment - remainder, result);
 }
 
-inline bool ComputeShmLayout(uint32_t maxSlots, uint32_t maxPrograms,
-                             uint32_t numCores, ShmLayoutDescriptor& layout) {
-    if (maxSlots == 0 || maxPrograms == 0 || numCores == 0) {
+inline bool ComputeShmLayout(
+    uint32_t maxSlots, uint32_t maxPrograms, uint32_t numCores,
+    ShmLayoutDescriptor& layout,
+    uint32_t perCoreTopNCapacity = defaultPerCoreTopN) {
+    if (maxSlots == 0 || maxPrograms == 0 || numCores == 0 ||
+        perCoreTopNCapacity < defaultPerCoreTopN ||
+        perCoreTopNCapacity > maxPerCoreTopN) {
         return false;
     }
+#ifndef SPDIAG_ENABLE_PERCENTILE
+    if (perCoreTopNCapacity != defaultPerCoreTopN) {
+        return false;
+    }
+#endif
 
     size_t registryBytes = 0;
     size_t namesBytes = 0;
     size_t statsBytes = 0;
+    size_t globalStatsBytes = 0;
     size_t shardSize = 0;
     size_t shardsBytes = 0;
     if (!CheckedSizeMultiply(maxPrograms, sizeof(ProgramEntry), registryBytes) ||
         !CheckedSizeMultiply(maxSlots, nameLen, namesBytes) ||
         !CheckedSizeMultiply(maxSlots, sizeof(PerfStat), statsBytes) ||
+        !CheckedSizeMultiply(maxSlots, sizeof(GlobalPerfStat),
+                             globalStatsBytes) ||
         !CheckedSizeAdd(shmShardStatsOffset, statsBytes, shardSize) ||
-        !CheckedSizeMultiply(numCores, shardSize, shardsBytes)) {
+        !CheckedAlignUp(shardSize, alignof(uint64_t), shardSize)) {
+        return false;
+    }
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    size_t perCoreTopNBytes = 0;
+    if (!CheckedSizeMultiply(maxSlots, perCoreTopNCapacity,
+                             perCoreTopNBytes) ||
+        !CheckedSizeMultiply(perCoreTopNBytes, sizeof(uint64_t),
+                             perCoreTopNBytes) ||
+        !CheckedSizeAdd(shardSize, perCoreTopNBytes, shardSize)) {
+        return false;
+    }
+    if (!CheckedAlignUp(shardSize, alignof(PerfStat), shardSize)) {
+        return false;
+    }
+#endif
+    if (!CheckedSizeMultiply(numCores, shardSize, shardsBytes)) {
         return false;
     }
 
@@ -357,9 +463,9 @@ inline bool ComputeShmLayout(uint32_t maxSlots, uint32_t maxPrograms,
                         layout.shardsOffset) ||
         !CheckedSizeAdd(layout.shardsOffset, shardsBytes,
                         layout.globalAccumOffset) ||
-        !CheckedAlignUp(layout.globalAccumOffset, alignof(PerfStat),
+        !CheckedAlignUp(layout.globalAccumOffset, alignof(GlobalPerfStat),
                         layout.globalAccumOffset) ||
-        !CheckedSizeAdd(layout.globalAccumOffset, statsBytes,
+        !CheckedSizeAdd(layout.globalAccumOffset, globalStatsBytes,
                         layout.totalSize)) {
         return false;
     }
@@ -373,33 +479,35 @@ static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t),
 static_assert(alignof(std::atomic<uint64_t>) == alignof(uint64_t),
               "atomic<uint64_t> alignment mismatch");
 
-struct PerfStatAlignedByteDeleter {
+template <typename T>
+struct AlignedByteDeleter {
     void operator()(uint8_t* ptr) const noexcept {
-        ::operator delete[](ptr, std::align_val_t{alignof(PerfStat)});
+        ::operator delete[](ptr, std::align_val_t{alignof(T)});
     }
 };
 
-class PerfStatBuffer {
+template <typename T>
+class AlignedObjectBuffer {
 public:
     void resize(size_t count) {
-        const size_t bytes = count * sizeof(PerfStat);
+        const size_t bytes = count * sizeof(T);
         if (bytes == 0) {
             data_.reset();
             count_ = 0;
             return;
         }
         data_.reset(static_cast<uint8_t*>(::operator new[](
-            bytes, std::align_val_t{alignof(PerfStat)})));
+            bytes, std::align_val_t{alignof(T)})));
         count_ = count;
         std::memset(data_.get(), 0, bytes);
     }
 
-    PerfStat* data() {
-        return static_cast<PerfStat*>(static_cast<void*>(data_.get()));
+    T* data() {
+        return static_cast<T*>(static_cast<void*>(data_.get()));
     }
 
-    const PerfStat* data() const {
-        return static_cast<const PerfStat*>(
+    const T* data() const {
+        return static_cast<const T*>(
             static_cast<const void*>(data_.get()));
     }
 
@@ -410,22 +518,30 @@ public:
     bool empty() const { return count_ == 0; }
 
 private:
-    std::unique_ptr<uint8_t[], PerfStatAlignedByteDeleter> data_;
+    std::unique_ptr<uint8_t[], AlignedByteDeleter<T>> data_;
     size_t count_ = 0;
 };
+
+using PerfStatBuffer = AlignedObjectBuffer<PerfStat>;
+using GlobalPerfStatBuffer = AlignedObjectBuffer<GlobalPerfStat>;
 
 class ShardBuffer {
 public:
     ShardBuffer() = default;
 
-    void resize(size_t count, uint32_t maxSlots) {
-        shardSize_ = ShmShardSize(maxSlots);
+    void resize(size_t count, uint32_t maxSlots,
+                uint32_t perCoreTopNCapacity = defaultPerCoreTopN,
+                bool zeroInitialize = true) {
+        shardSize_ = ShmShardSize(maxSlots, perCoreTopNCapacity);
         maxSlots_ = maxSlots;
+        perCoreTopNCapacity_ = perCoreTopNCapacity;
         const size_t bytes = count * shardSize_;
         data_.reset(static_cast<uint8_t*>(::operator new[](
             bytes, std::align_val_t{alignof(PerfStat)})));
         count_ = count;
-        std::memset(data_.get(), 0, bytes);
+        if (zeroInitialize) {
+            std::memset(data_.get(), 0, bytes);
+        }
     }
 
     PerfStat* stats(size_t shardIdx) {
@@ -436,6 +552,18 @@ public:
         return ShmShardStats(data_.get() + shardIdx * shardSize_);
     }
 
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    TopNView topN(size_t shardIdx, uint32_t slot) {
+        return ShmShardTopN(shardData(shardIdx), slot, maxSlots_,
+                            perCoreTopNCapacity_);
+    }
+
+    ConstTopNView topN(size_t shardIdx, uint32_t slot) const {
+        return ShmShardTopN(shardData(shardIdx), slot, maxSlots_,
+                            perCoreTopNCapacity_);
+    }
+#endif
+
     void* shardData(size_t shardIdx) {
         return data_.get() + shardIdx * shardSize_;
     }
@@ -445,14 +573,16 @@ public:
     }
 
     uint32_t maxSlots() const { return maxSlots_; }
+    uint32_t perCoreTopNCapacity() const { return perCoreTopNCapacity_; }
     size_t size() const { return count_; }
     bool empty() const { return count_ == 0; }
 
 private:
-    std::unique_ptr<uint8_t[], PerfStatAlignedByteDeleter> data_;
+    std::unique_ptr<uint8_t[], AlignedByteDeleter<PerfStat>> data_;
     size_t count_ = 0;
     size_t shardSize_ = 0;
     uint32_t maxSlots_ = 0;
+    uint32_t perCoreTopNCapacity_ = defaultPerCoreTopN;
 };
 
 }

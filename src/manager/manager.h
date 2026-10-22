@@ -36,8 +36,8 @@ struct CollectResult {
     ShardBuffer shards;
     uint32_t numCores = 0;
     uint32_t maxSlots = 0;
-    // 全局 PerfPoint 累加区快照（原始 PerfStat[] 字节，无 coreId 前缀）。
-    PerfStatBuffer globalAccumData;
+    // 全局 PerfPoint 累加区快照（与每核 runtime Top-N 分离）。
+    GlobalPerfStatBuffer globalAccumData;
     uint32_t globalAccumCount = 0;
 #ifdef SPDIAG_ENABLE_PERFLOG
     uint8_t  perflogEnabled = 0;

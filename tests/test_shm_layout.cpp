@@ -30,7 +30,9 @@ TEST(ShmLayoutTest, Constants) {
     EXPECT_EQ(SpDiag::maxTopN, 100u);
 #endif
     EXPECT_EQ(SpDiag::nameLen, 64u);
-    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 1u);
+    EXPECT_EQ(SpDiag::defaultPerCoreTopN, 100u);
+    EXPECT_EQ(SpDiag::maxPerCoreTopN, 100u);
+    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 2u);
 }
 
 TEST(ShmLayoutTest, FeatureMaskMatchesCompileTimeLayout) {
@@ -56,7 +58,7 @@ TEST(ShmLayoutTest, ComputesExpectedOffsetsAndTotalSize) {
     EXPECT_GT(layout.globalAccumOffset, layout.shardsOffset);
     EXPECT_GT(layout.totalSize, layout.globalAccumOffset);
     EXPECT_EQ(layout.shardsOffset % alignof(SpDiag::PerfStat), 0u);
-    EXPECT_EQ(layout.globalAccumOffset % alignof(SpDiag::PerfStat), 0u);
+    EXPECT_EQ(layout.globalAccumOffset % alignof(SpDiag::GlobalPerfStat), 0u);
     EXPECT_EQ(SpDiag::ShmShardSize(256) % alignof(SpDiag::PerfStat), 0u);
 }
 
@@ -74,6 +76,13 @@ TEST(ShmLayoutTest, RejectsZeroDimensions) {
     EXPECT_FALSE(SpDiag::ComputeShmLayout(0, 8, 4, layout));
     EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 0, 4, layout));
     EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 0, layout));
+}
+
+TEST(ShmLayoutTest, AcceptsOnlyCurrentPerCoreTopNCapacity) {
+    SpDiag::ShmLayoutDescriptor defaultLayout;
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 4, defaultLayout, 99));
+    EXPECT_TRUE(SpDiag::ComputeShmLayout(256, 8, 4, defaultLayout, 100));
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 4, defaultLayout, 101));
 }
 
 TEST(ShmLayoutTest, RejectsOverflowingDimensions) {
@@ -123,6 +132,7 @@ TEST(ShmLayoutTest, ShmHeaderV3Fields) {
     EXPECT_EQ(hdr.maxPrograms, 0u);
     EXPECT_EQ(hdr.registeredPrograms, 0u);
     EXPECT_EQ(hdr.numCores, 0u);
+    EXPECT_EQ(hdr.perCoreTopNCapacity, SpDiag::defaultPerCoreTopN);
     EXPECT_EQ(hdr.registryOffset, size_t(0));
     EXPECT_EQ(hdr.keyNamesOffset, size_t(0));
     EXPECT_EQ(hdr.keyModuleNamesOffset, size_t(0));
@@ -139,6 +149,15 @@ TEST(ShmLayoutTest, GlobalAccumStruct) {
     EXPECT_EQ(a.tickCount.load(), 0u);
     EXPECT_EQ(a.minTimeNs.load(), 0u);
     EXPECT_EQ(SpDiag::MAX_GLOBAL_POINTS, SpDiag::MAX_PERF_SLOTS);
+}
+
+TEST(ShmLayoutTest, GlobalPerfStatIsSeparatedFromPerCoreStorage) {
+    EXPECT_EQ(alignof(SpDiag::GlobalPerfStat), 64u);
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    EXPECT_GT(sizeof(SpDiag::GlobalPerfStat), sizeof(SpDiag::PerfStat));
+#else
+    EXPECT_EQ(sizeof(SpDiag::GlobalPerfStat), sizeof(SpDiag::PerfStat));
+#endif
 }
 
 TEST(ShmLayoutTest, ShmHeaderInit) {
@@ -223,6 +242,21 @@ TEST(ShmLayoutTest, ShardBufferResize) {
         EXPECT_EQ(stats[0].backGoodCount, 42u);
     }
 }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+TEST(ShmLayoutTest, DefaultCapacityAlsoUsesRuntimePerCoreHeap) {
+    SpDiag::ShardBuffer buf;
+    buf.resize(1, 4, SpDiag::defaultPerCoreTopN);
+
+    auto heap = buf.topN(0, 1);
+    ASSERT_NE(heap.values, nullptr);
+    ASSERT_NE(heap.count, nullptr);
+    EXPECT_EQ(heap.capacity, SpDiag::defaultPerCoreTopN);
+    SpDiag::InsertTopN(heap, 123);
+    EXPECT_EQ(*heap.count, 1u);
+    EXPECT_EQ(heap.values[0], 123u);
+}
+#endif
 
 TEST(ShmLayoutTest, PerfStatReset) {
     SpDiag::PerfStat stat{};

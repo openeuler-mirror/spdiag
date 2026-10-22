@@ -167,7 +167,8 @@ void PerfPoint::End(int returnCode) {
     uint64_t endTs = NowNs();
     uint64_t elapsed = endTs - startTs_;
     PerfManager& mgr = PerfManager::Instance();
-    stat_ = &mgr.GetShard().stats[slotIndex_];
+    auto& shard = mgr.GetShard();
+    stat_ = &shard.stats[slotIndex_];
     stat_->slotIndex = mgr.FastResolveSlot(slotIndex_);
     stat_->level = static_cast<uint8_t>(level_);
 
@@ -191,7 +192,7 @@ void PerfPoint::End(int returnCode) {
     stat_->tickCount++;
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-    InsertTopN(*stat_, elapsed);
+    mgr.GetShardManager().InsertTopNValue(shard, slotIndex_, elapsed);
 #endif
 #ifdef SPDIAG_ENABLE_PERFLOG
     if (mgr.IsPerfLogEnabled()) {

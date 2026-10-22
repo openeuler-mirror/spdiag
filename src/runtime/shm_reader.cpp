@@ -15,6 +15,7 @@
 #include <cstring>
 #include <random>
 #include <algorithm>
+#include <new>
 #include <thread>
 #include <chrono>
 
@@ -75,18 +76,18 @@ const char (*ShmReader::ReadKeyModuleNames() const)[nameLen] {
         reinterpret_cast<const uint8_t*>(handle_.baseAddr) + hdr.keyModuleNamesOffset);
 }
 
-const PerfStat* ShmReader::ReadGlobalAccum() const {
+const GlobalPerfStat* ShmReader::ReadGlobalAccum() const {
     const ShmHeader& hdr = Header();
     if (hdr.globalAccumCount == 0) {
         return nullptr;
     }
-    return static_cast<const PerfStat*>(static_cast<const void*>(
+    return static_cast<const GlobalPerfStat*>(static_cast<const void*>(
         reinterpret_cast<const uint8_t*>(handle_.baseAddr) +
         hdr.globalAccumOffset));
 }
 
 bool ShmReader::SnapshotShards(ShardBuffer& out,
-                              PerfStatBuffer* globalOut) const {
+                              GlobalPerfStatBuffer* globalOut) const {
     const ShmHeader& hdr = Header();
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -113,18 +114,50 @@ bool ShmReader::SnapshotShards(ShardBuffer& out,
         // 阶段 2：偶数确认后才开始 memcpy
         std::atomic_thread_fence(std::memory_order_acquire);
         uint32_t numShards = hdr.numCores;
-        out.resize(numShards, hdr.maxSlots);
+        if (out.size() != numShards || out.maxSlots() != hdr.maxSlots ||
+            out.perCoreTopNCapacity() != hdr.perCoreTopNCapacity) {
+            try {
+                out.resize(numShards, hdr.maxSlots,
+                           hdr.perCoreTopNCapacity, false);
+            } catch (const std::bad_alloc&) {
+                return false;
+            }
+        }
 
-        size_t shardSize = ShmShardSize(hdr.maxSlots);
+        size_t shardSize = ShmShardSize(hdr.maxSlots,
+                                        hdr.perCoreTopNCapacity);
         for (uint32_t i = 0; i < numShards; ++i) {
             const void* src = reinterpret_cast<const uint8_t*>(
                 handle_.baseAddr) + hdr.shardsOffset + i * shardSize;
-            std::memcpy(out.shardData(i), src, shardSize);
+            void* dst = out.shardData(i);
+#ifdef SPDIAG_ENABLE_PERCENTILE
+            const size_t fixedBytes = ShmShardTopNOffset(hdr.maxSlots);
+            std::memcpy(dst, src, fixedBytes);
+            const PerfStat* stats = ShmShardStats(dst);
+            for (uint32_t slot = 0; slot < hdr.maxSlots; ++slot) {
+                const uint32_t count = std::min<uint32_t>(
+                    stats[slot].topNCount, hdr.perCoreTopNCapacity);
+                if (count == 0) {
+                    continue;
+                }
+                const auto source = ShmShardTopN(
+                    src, slot, hdr.maxSlots,
+                    hdr.perCoreTopNCapacity);
+                auto destination = ShmShardTopN(
+                    dst, slot, hdr.maxSlots,
+                    hdr.perCoreTopNCapacity);
+                std::memcpy(destination.values, source.values,
+                            static_cast<size_t>(count) * sizeof(uint64_t));
+            }
+#else
+            std::memcpy(dst, src, shardSize);
+#endif
         }
 
-        // 同窗口快照全局 PerfPoint 累加区（无 coreId 前缀，原始 PerfStat[] 字节）。
+        // 同窗口快照全局 PerfPoint 累加区。
         if (globalOut != nullptr && hdr.globalAccumCount > 0) {
-            size_t globalBytes = static_cast<size_t>(hdr.globalAccumCount) * sizeof(PerfStat);
+            size_t globalBytes = static_cast<size_t>(hdr.globalAccumCount) *
+                                 sizeof(GlobalPerfStat);
             globalOut->resize(hdr.globalAccumCount);
             const void* gsrc = reinterpret_cast<const uint8_t*>(handle_.baseAddr)
                                + hdr.globalAccumOffset;

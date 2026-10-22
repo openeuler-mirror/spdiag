@@ -82,7 +82,8 @@ TEST_P(PerfPointDurationTest, LocalAndGlobalMatchSteadyClock) {
     // Allow timing overhead under emulation while still catching a 4.295s wrap.
     const auto toleranceNs = std::max<int64_t>(50000000, referenceNs / 100);
 
-    const auto& stat = PerfManager::Instance().GetShard().stats[slot];
+    auto& localShard = PerfManager::Instance().GetShard();
+    const auto& stat = localShard.stats[slot];
     EXPECT_EQ(stat.tickCount, 1u);
     EXPECT_EQ(stat.backGoodCount, 1u);
     EXPECT_EQ(stat.backBadCount, 0u);
@@ -92,8 +93,11 @@ TEST_P(PerfPointDurationTest, LocalAndGlobalMatchSteadyClock) {
     EXPECT_EQ(stat.minTimeNs, stat.totalTimeNs);
     EXPECT_EQ(stat.maxTimeNs, stat.totalTimeNs);
 #ifdef SPDIAG_ENABLE_PERCENTILE
-    ASSERT_EQ(stat.topNCount, 1u);
-    EXPECT_EQ(stat.topN[0], stat.totalTimeNs);
+    const auto topN = PerfManager::Instance().GetShardManager().GetTopN(
+        localShard, slot);
+    ASSERT_EQ(topN.count->load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(topN.values[0].load(std::memory_order_relaxed),
+              stat.totalTimeNs);
 #endif
 #ifdef SPDIAG_ENABLE_PERFLOG
     ASSERT_TRUE(PerfManager::Instance().IsPerfLogEnabled());

@@ -178,7 +178,7 @@ TEST_F(ShmReaderTest, RegistryNamesAndGlobalAccumContract) {
     EXPECT_NE(keyModNames, nullptr);
 
     // 头契约（shm_reader.h）：globalAccumCount==0 → nullptr；否则非空。
-    const PerfStat* globalAccum = reader.ReadGlobalAccum();
+    const GlobalPerfStat* globalAccum = reader.ReadGlobalAccum();
     if (hdr.globalAccumCount == 0u) {
         EXPECT_EQ(globalAccum, nullptr);
     } else {
@@ -224,8 +224,8 @@ TEST_F(ShmReaderTest, RapidSnapshotsAreConsistent) {
     EXPECT_EQ(tick1, tick2);
     EXPECT_GT(tick1, 0u);
 
-    // globalOut 出参：globalAccumCount>0 时按契约填充对齐的 PerfStat 数组。
-    PerfStatBuffer globalData;
+    // globalOut 出参：globalAccumCount>0 时按契约填充对齐的全局数组。
+    GlobalPerfStatBuffer globalData;
     ShardBuffer snap3;
     ASSERT_TRUE(reader.SnapshotShards(snap3, &globalData));
     const ShmHeader& hdr = reader.Header();
