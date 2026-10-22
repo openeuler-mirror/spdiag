@@ -95,11 +95,9 @@ public:
     void MergeDelta(const std::vector<AggregatedStat>& deltaStats);
 
     const std::vector<AggregatedStat>& Results() const;
-    const ShardBuffer& PerCoreShards() const;
 
 private:
     std::vector<AggregatedStat> results_;
-    ShardBuffer shards_;
 };
 
 }

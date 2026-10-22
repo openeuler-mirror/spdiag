@@ -19,6 +19,7 @@
 
 using SpDiag::CalculatePercentiles;
 using SpDiag::CalculatePercentilesFromMinHeap;
+using SpDiag::CalculatePercentilesUnsorted;
 
 TEST(PercentileTest, NormalCalculation) {
     std::vector<uint64_t> topN = {500, 400, 300, 200, 100};
@@ -109,6 +110,20 @@ TEST(PercentileTest, CalculatesFromUnsortedMinHeapWithoutMutatingInput) {
     EXPECT_TRUE(hasP9999);
     EXPECT_EQ(900u, p9999Ns);
     EXPECT_TRUE(std::equal(original.begin(), original.end(), std::begin(heap)));
+}
+
+TEST(PercentileTest, SelectsPercentilesWithoutFullSort) {
+    std::vector<uint64_t> values = {100, 900, 300, 800, 500, 700, 200, 600, 400};
+    uint64_t p99, p999, p9999;
+    bool hasP99, hasP999, hasP9999;
+    CalculatePercentilesUnsorted(values, 400, p99, hasP99,
+                                 p999, hasP999, p9999, hasP9999);
+    EXPECT_TRUE(hasP99);
+    EXPECT_EQ(p99, 500u);
+    EXPECT_TRUE(hasP999);
+    EXPECT_EQ(p999, 900u);
+    EXPECT_TRUE(hasP9999);
+    EXPECT_EQ(p9999, 900u);
 }
 
 #endif

@@ -58,9 +58,9 @@ void SetShardStat(SpDiag::ShardBuffer& shards, size_t programIdx, size_t coreIdx
 }
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-void SetTopN(SpDiag::ShardBuffer& shards, size_t core, uint32_t slot,
+void SetTopN(SpDiag::ShardBuffer& shards, size_t coreIdx, uint32_t slot,
              std::initializer_list<uint64_t> values) {
-    auto topN = shards.topN(core, slot);
+    auto topN = shards.topN(coreIdx, slot);
     ASSERT_LE(values.size(), topN.capacity);
     std::copy(values.begin(), values.end(), topN.values);
     *topN.count = static_cast<uint16_t>(values.size());
@@ -179,10 +179,89 @@ TEST(AggregatorTest, TopNMerge) {
 
     const auto& results = agg.Results();
     ASSERT_EQ(results.size(), 1u);
-    ASSERT_GE(results[0].globalTopN.size(), 3u);
-    EXPECT_EQ(results[0].globalTopN[0], 400u);
-    EXPECT_EQ(results[0].globalTopN[1], 350u);
-    EXPECT_EQ(results[0].globalTopN[2], 300u);
+    EXPECT_TRUE(results[0].hasP99);
+    EXPECT_EQ(results[0].p99Ns, 400u);
+    EXPECT_TRUE(results[0].globalTopN.empty());
+}
+
+TEST(AggregatorTest, RejectsUnprovablePercentileAcrossTruncatedCores) {
+    TestCtx ctx{};
+    InitSingleProgramCtx(ctx);
+    ctx.shards.resize(3, TEST_MAX_SLOTS);
+    auto* busy = ctx.shards.stats(0);
+    busy[1].slotIndex = 1;
+    busy[1].tickCount = 10000;
+    auto busyTopN = ctx.shards.topN(0, 1);
+    for (uint32_t i = 0; i < SpDiag::maxTopN; ++i) {
+        busyTopN.values[i] = 9901 + i;
+    }
+    *busyTopN.count = SpDiag::maxTopN;
+    for (uint32_t core = 1; core < 3; ++core) {
+        auto* stats = ctx.shards.stats(core);
+        stats[1].slotIndex = 1;
+        stats[1].tickCount = 1;
+        SetTopN(ctx.shards, core, 1, {core});
+    }
+
+    SpDiag::Aggregator agg;
+    agg.Aggregate(ctx.programs, 1, ctx.keyPointNames, ctx.keyModuleNames,
+                  ctx.shards, 3);
+
+    const auto& results = agg.Results();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(results[0].hasP99);
+    EXPECT_TRUE(results[0].hasP999);
+    EXPECT_EQ(results[0].p999Ns, 9990u);
+    EXPECT_TRUE(results[0].hasP9999);
+    EXPECT_EQ(results[0].p9999Ns, 9999u);
+}
+
+TEST(AggregatorTest, Node2ScaleCandidatesMakeP99Available) {
+    constexpr uint32_t kNodeCores = 392;
+    constexpr uint64_t kTotalTicks = 718393;
+    constexpr uint32_t kSlots = 2;
+
+    SpDiag::ProgramEntry program{};
+    std::strncpy(program.name, "Node2Scale", sizeof(program.name) - 1);
+    program.baseSlot = 0;
+    program.slotCount = kSlots;
+    program.numCores = kNodeCores;
+    program.active = 1;
+    char keyPointNames[kSlots][SpDiag::nameLen]{};
+    char keyModuleNames[kSlots][SpDiag::nameLen]{};
+    std::strncpy(keyPointNames[1], "Submit[G]", SpDiag::nameLen - 1);
+    std::strncpy(keyModuleNames[1], "TransferData", SpDiag::nameLen - 1);
+
+    SpDiag::ShardBuffer shards;
+    shards.resize(kNodeCores, kSlots);
+    const uint64_t ticksPerCore = kTotalTicks / kNodeCores;
+    const uint32_t remainder = static_cast<uint32_t>(
+        kTotalTicks % kNodeCores);
+    for (uint32_t core = 0; core < kNodeCores; ++core) {
+        auto* stats = shards.stats(core);
+        stats[1].slotIndex = 1;
+        stats[1].tickCount = static_cast<uint32_t>(
+            ticksPerCore + (core < remainder ? 1 : 0));
+        auto topN = shards.topN(core, 1);
+        for (uint32_t i = 0; i < SpDiag::maxTopN; ++i) {
+            topN.values[i] =
+                static_cast<uint64_t>(core) * SpDiag::maxTopN + i + 1;
+        }
+        *topN.count = static_cast<uint16_t>(SpDiag::maxTopN);
+    }
+
+    SpDiag::Aggregator agg;
+    agg.Aggregate(&program, 1, keyPointNames, keyModuleNames,
+                  shards, kNodeCores);
+
+    const auto& results = agg.Results();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].totalTickCount, kTotalTicks);
+    EXPECT_FALSE(results[0].hasP99);
+    EXPECT_FALSE(results[0].hasP999);
+    EXPECT_TRUE(results[0].hasP9999);
+    EXPECT_EQ(results[0].p9999Ns, 39129u);
+    EXPECT_TRUE(results[0].globalTopN.empty());
 }
 
 TEST(AggregatorTest, PercentileCalculation) {
@@ -260,6 +339,7 @@ TEST(AggregatorTest, MergeDeltaAccumulation) {
     EXPECT_DOUBLE_EQ(results[0].avgTimeNs, 3000.0 / 38.0);
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
+    EXPECT_EQ(results[0].globalTopN, delta.globalTopN);
     EXPECT_EQ(results[0].p99Ns, 300u);
     EXPECT_EQ(results[0].p999Ns, 340u);
     EXPECT_EQ(results[0].p9999Ns, 350u);

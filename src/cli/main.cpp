@@ -28,6 +28,7 @@
 #include "runtime/plugins/mempoint/mempoint.h"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <iostream>
@@ -43,6 +44,11 @@ bool CheckShmAliveOrWarn(const SpDiagManager& manager, const std::string& shmNam
         return false;
     }
     return true;
+}
+
+uint32_t DefaultWatchIntervalMs(uint32_t capacity) {
+    return static_cast<uint32_t>(std::max<uint64_t>(
+        3000, std::min<uint64_t>(180000, 18ULL * capacity)));
 }
 
 DisplayOptions BuildDisplayOptions(const Cli::CliConfig& config) {
@@ -146,6 +152,7 @@ int main(int argc, char* argv[]) {
     switch (config.command) {
         case Cli::Command::SHOW: {
             if (!CheckShmAliveOrWarn(manager, config.shmName)) return 1;
+            if (!manager.RequestFreshDump(config)) return 1;
             if (config.HasAnyFlag(FlagBit(Cli::UserFlag::CSV_OUTPUT))) {
                 display.GetCsvWriter().SetOutputDir(config.csvOutputDir);
             }
@@ -182,11 +189,19 @@ int main(int argc, char* argv[]) {
             });
             display.ClearScreen();
             display.MoveCursorHome();
+            uint32_t watchIntervalMs = config.watchIntervalMs;
+            const bool automaticInterval =
+                !config.HasAnyFlag(FlagBit(Cli::UserFlag::INTERVAL));
             while (!signal_watcher.IsInterrupted()) {
                 display.ClearScreen();
                 display.MoveCursorHome();
 
+                if (!manager.RequestFreshDump(config)) return 1;
                 auto result = manager.CollectAndAggregate(config);
+                if (automaticInterval) {
+                    watchIntervalMs = DefaultWatchIntervalMs(
+                        result.perCoreTopNCapacity);
+                }
 #ifdef SPDIAG_ENABLE_PERFLOG
                 if (config.perflogShow) {
                     ShmInfo info;
@@ -208,7 +223,8 @@ int main(int argc, char* argv[]) {
                     auto opts = BuildDisplayOptions(config);
                     DisplayResults(display, result, config, opts);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(config.watchIntervalMs));
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(watchIntervalMs));
             }
             display.GetCsvWriter().ForceEndSession();
             return 0;
@@ -227,6 +243,14 @@ int main(int argc, char* argv[]) {
         case Cli::Command::HISTORY: {
             if (config.HasAnyFlag(FlagBit(Cli::UserFlag::CSV_OUTPUT))) {
                 display.GetCsvWriter().SetOutputDir(config.csvOutputDir);
+            }
+            if (manager.CheckShmAlive(config.shmName)) {
+                if (manager.RequestFreshDump(config)) {
+                    (void)manager.CollectAndAggregate(config);
+                } else {
+                    std::cerr << "spdiag: fresh dump unavailable; showing "
+                                 "persisted history" << std::endl;
+                }
             }
             auto records = manager.QueryHistory(config);
             if (records.empty()) {

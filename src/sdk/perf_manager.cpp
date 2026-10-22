@@ -98,10 +98,7 @@ void PerfManager::Init(const PerfConfig& config) {
         levelGate_ = config.levelGate;
     }
 
-    uint32_t dumpInterval = config.dumpIntervalMs;
-    if (dumpInterval == 0) {
-        dumpInterval = (mode_ == RunMode::RELEASE) ? 5000 : 1000;
-    }
+    const uint32_t dumpInterval = config.dumpIntervalMs;
 
     numCores_ = std::thread::hardware_concurrency();
     if (numCores_ == 0) {
@@ -421,6 +418,10 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         hdr->registeredPrograms++;
     }
 
+    ProgramEntry* registered = registry + programIndex_;
+    __atomic_store_n(&registered->dumpAckGeneration,
+        hdr->dumpRequestGeneration.load(std::memory_order_acquire),
+        __ATOMIC_RELEASE);
     registryGuard.reset();
 
     baseOffset_ = baseSlot;

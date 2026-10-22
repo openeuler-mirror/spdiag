@@ -103,8 +103,13 @@ void ShmWriter::WriteHeader(const ShmHeader& hdr) {
     dst->perCoreTopNCapacity = hdr.perCoreTopNCapacity;
     dst->dumpIntervalMs = hdr.dumpIntervalMs;
     dst->generation = hdr.generation;
-    dst->dumpSeqNo.store(hdr.dumpSeqNo.load(std::memory_order_relaxed),
-                         std::memory_order_relaxed);
+    if (dst != &hdr) {
+        dst->dumpRequestGeneration.store(
+            hdr.dumpRequestGeneration.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        dst->dumpSeqNo.store(hdr.dumpSeqNo.load(std::memory_order_relaxed),
+                             std::memory_order_relaxed);
+    }
     dst->lastDumpTimestampNs = hdr.lastDumpTimestampNs;
     dst->shmTotalSize = hdr.shmTotalSize;
     dst->registryOffset = hdr.registryOffset;

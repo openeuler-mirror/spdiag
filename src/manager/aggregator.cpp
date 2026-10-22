@@ -16,7 +16,7 @@
 #endif
 #include <map>
 #include <algorithm>
-#include <cstring>
+#include <limits>
 
 namespace SpDiag {
 
@@ -26,14 +26,19 @@ void Aggregator::Aggregate(
     const ShardBuffer& srcShards, uint32_t numCores,
     const GlobalPerfStat* globalStats, uint32_t globalCount)
 {
-    shards_.resize(srcShards.size(), srcShards.maxSlots());
-    for (size_t i = 0; i < srcShards.size(); ++i) {
-        std::memcpy(shards_.shardData(i), srcShards.shardData(i), ShmShardSize(srcShards.maxSlots()));
-    }
-
     std::map<uint32_t, AggregatedStat> statMap;
     const size_t coreCount = std::min(static_cast<size_t>(numCores), srcShards.size());
     const uint32_t maxSlots = srcShards.maxSlots();
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    std::vector<uint64_t> percentileCandidates;
+    size_t perCoreCandidates = 0;
+    size_t candidateCapacity = 0;
+    if (CheckedSizeMultiply(coreCount, srcShards.perCoreTopNCapacity(),
+                            perCoreCandidates) &&
+        CheckedSizeAdd(perCoreCandidates, maxTopN, candidateCapacity)) {
+        percentileCandidates.reserve(candidateCapacity);
+    }
+#endif
 
     for (uint32_t p = 0; p < numPrograms; ++p) {
         if (!programs[p].active) continue;
@@ -70,23 +75,15 @@ void Aggregator::Aggregate(
                     entry.globalMaxTimeNs = stat.maxTimeNs;
                 }
 
-#ifdef SPDIAG_ENABLE_PERCENTILE
-                const auto topN = srcShards.topN(core, j);
-                for (uint32_t t = 0; t < topN.count; ++t) {
-                    if (topN.values[t] > 0) {
-                        entry.globalTopN.push_back(topN.values[t]);
-                    }
-                }
-#endif
-
                 entry.level = stat.level;
             }
         }
     }
 
     // 全局 PerfPoint 累加区：按 globalSlotIndex 直接合并到同一 statMap（与 local 同 key 汇总）。
+    const uint32_t boundedGlobalCount =
+        (globalStats == nullptr) ? 0 : std::min(globalCount, maxSlots);
     if (globalStats != nullptr && globalCount > 0) {
-        uint32_t boundedGlobalCount = std::min(globalCount, maxSlots);
         for (uint32_t gi = 0; gi < boundedGlobalCount; ++gi) {
             const PerfStat& stat = globalStats[gi].stat;
             if (stat.tickCount == 0) {
@@ -113,13 +110,6 @@ void Aggregator::Aggregate(
             if (stat.level != 0) {
                 entry.level = stat.level;
             }
-#ifdef SPDIAG_ENABLE_PERCENTILE
-            for (uint32_t t = 0; t < stat.topNCount && t < maxTopN; ++t) {
-                if (globalStats[gi].topN[t] > 0) {
-                    entry.globalTopN.push_back(globalStats[gi].topN[t]);
-                }
-            }
-#endif
         }
     }
 
@@ -129,10 +119,56 @@ void Aggregator::Aggregate(
         }
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-        std::sort(entry.globalTopN.begin(), entry.globalTopN.end(), std::greater<uint64_t>());
-        if (entry.globalTopN.size() > maxTopN) {
-            entry.globalTopN.resize(maxTopN);
+        percentileCandidates.clear();
+        uint64_t truncationFloor = 0;
+        bool coverageUnknown = false;
+        for (size_t core = 0; core < coreCount; ++core) {
+            const PerfStat& stat = srcShards.stats(core)[slotIdx];
+            if (stat.tickCount == 0 || stat.slotIndex != slotIdx) {
+                continue;
+            }
+            const auto topN = srcShards.topN(core, slotIdx);
+            uint64_t sourceFloor = std::numeric_limits<uint64_t>::max();
+            for (uint32_t t = 0; t < topN.count; ++t) {
+                if (topN.values[t] > 0) {
+                    percentileCandidates.push_back(topN.values[t]);
+                    sourceFloor = std::min(sourceFloor, topN.values[t]);
+                }
+            }
+            if (stat.tickCount > topN.count) {
+                if (sourceFloor == std::numeric_limits<uint64_t>::max()) {
+                    coverageUnknown = true;
+                } else {
+                    truncationFloor = std::max(truncationFloor, sourceFloor);
+                }
+            }
         }
+        if (slotIdx < boundedGlobalCount) {
+            const PerfStat& stat = globalStats[slotIdx].stat;
+            const uint32_t count = std::min<uint32_t>(stat.topNCount, maxTopN);
+            uint64_t sourceFloor = std::numeric_limits<uint64_t>::max();
+            for (uint32_t t = 0; t < count; ++t) {
+                if (globalStats[slotIdx].topN[t] > 0) {
+                    percentileCandidates.push_back(
+                        globalStats[slotIdx].topN[t]);
+                    sourceFloor = std::min(
+                        sourceFloor, globalStats[slotIdx].topN[t]);
+                }
+            }
+            if (stat.tickCount > count) {
+                if (sourceFloor == std::numeric_limits<uint64_t>::max()) {
+                    coverageUnknown = true;
+                } else {
+                    truncationFloor = std::max(truncationFloor, sourceFloor);
+                }
+            }
+        }
+        CalculatePercentilesUnsorted(percentileCandidates,
+            entry.totalTickCount,
+            entry.p99Ns, entry.hasP99,
+            entry.p999Ns, entry.hasP999,
+            entry.p9999Ns, entry.hasP9999,
+            truncationFloor, coverageUnknown);
 #endif
 
         for (uint32_t p = 0; p < numPrograms; ++p) {
@@ -153,22 +189,10 @@ void Aggregator::Aggregate(
         results_.push_back(std::move(entry));
     }
 
-#ifdef SPDIAG_ENABLE_PERCENTILE
-    for (auto& stat : results_) {
-        CalculatePercentiles(stat.globalTopN, stat.totalTickCount,
-            stat.p99Ns, stat.hasP99,
-            stat.p999Ns, stat.hasP999,
-            stat.p9999Ns, stat.hasP9999);
-    }
-#endif
 }
 
 const std::vector<AggregatedStat>& Aggregator::Results() const {
     return results_;
-}
-
-const ShardBuffer& Aggregator::PerCoreShards() const {
-    return shards_;
 }
 
 void Aggregator::MergeDelta(const std::vector<AggregatedStat>& deltaStats) {

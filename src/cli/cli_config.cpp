@@ -20,11 +20,13 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cerrno>
 #include <exception>
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
 #include <sstream>
+#include <limits>
 
 namespace {
 
@@ -154,6 +156,16 @@ std::string ValidateCommandOptions(const CliConfig& cfg) {
         }
     }
 
+    if (cfg.perCoreTopN < SpDiag::defaultPerCoreTopN ||
+        cfg.perCoreTopN > SpDiag::maxPerCoreTopN) {
+        return "Invalid per_core_top_n: expected a value in [100, 10000]";
+    }
+#ifndef SPDIAG_ENABLE_PERCENTILE
+    if (cfg.perCoreTopN != SpDiag::defaultPerCoreTopN) {
+        return "per_core_top_n is unavailable in a build without percentile support";
+    }
+#endif
+
     return {};
 }
 
@@ -205,6 +217,12 @@ void MergeConfig(SpDiag::Cli::CliConfig& dst, const SpDiag::Cli::CliConfig& src)
     }
     if (src.maxPrograms != 8) {
         dst.maxPrograms = src.maxPrograms;
+    }
+    if (src.perCoreTopN != SpDiag::defaultPerCoreTopN) {
+        dst.perCoreTopN = src.perCoreTopN;
+    }
+    if (!src.configError.empty()) {
+        dst.configError = src.configError;
     }
 }
 
@@ -401,6 +419,10 @@ GlobalScanResult ScanGlobalOptions(int argc, char* argv[], CliConfig& cfg) {
         cfg.configPath = result.configPath;
         CliConfig fileConfig = CliConfig::LoadFromFile(result.configPath, !configPathExplicit);
         MergeConfig(cfg, fileConfig);
+        if (!cfg.configError.empty()) {
+            result.error = cfg.configError;
+            return result;
+        }
     }
 
     return result;
@@ -904,6 +926,19 @@ CliConfig CliConfig::LoadFromFile(const std::string& path, bool silent) {
             cfg.maxSlots = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
         } else if (lowerKey == "maxprograms") {
             cfg.maxPrograms = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+        } else if (lowerKey == "per_core_top_n") {
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(val.c_str(), &end, 10);
+            if (errno != 0 || end == val.c_str() || *end != '\0' ||
+                parsed > std::numeric_limits<uint32_t>::max() ||
+                parsed < SpDiag::defaultPerCoreTopN ||
+                parsed > SpDiag::maxPerCoreTopN) {
+                cfg.configError =
+                    "Invalid per_core_top_n: expected an integer in [100, 10000]";
+                return cfg;
+            }
+            cfg.perCoreTopN = static_cast<uint32_t>(parsed);
         }
     }
 

@@ -106,9 +106,55 @@ TEST(PerfShardTest, SnapshotAndReset) {
 }
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
+TEST(PerfShardTest, PerCoreTopNIsCumulativeAcrossSnapshots) {
+    for (uint32_t capacity : {100U, 1000U, 10000U}) {
+        SpDiag::PerfShardManager mgr;
+        ASSERT_TRUE(mgr.Init(1, 4, capacity));
+        SpDiag::LocalPerfShard& shard = mgr.GetShard();
+        for (uint64_t value = 1; value <= capacity; ++value) {
+            mgr.InsertTopNValue(shard, 1, value);
+        }
+        std::vector<uint64_t> snapshotTopN(
+            static_cast<size_t>(4) * capacity);
+        std::vector<uint16_t> counts(4);
+        mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard);
+        EXPECT_EQ(counts[1], capacity);
+        EXPECT_EQ(snapshotTopN[capacity], 1u);
+        EXPECT_EQ(mgr.GetTopN(shard, 1).count->load(
+                      std::memory_order_relaxed), capacity);
+        for (uint64_t value = capacity + 1;
+             value <= static_cast<uint64_t>(capacity) * 2; ++value) {
+            mgr.InsertTopNValue(shard, 1, value);
+        }
+        mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard);
+        EXPECT_EQ(counts[1], capacity);
+        EXPECT_EQ(snapshotTopN[capacity], capacity + 1);
+    }
+}
+TEST(PerfShardTest, RestoresRuntimeTopNFromShmCandidates) {
+    constexpr uint32_t capacity = 1000;
+    SpDiag::PerfShardManager mgr;
+    ASSERT_TRUE(mgr.Init(1, 2, capacity));
+    SpDiag::LocalPerfShard& shard = mgr.GetShard();
+
+    std::vector<uint64_t> source(capacity);
+    for (uint32_t i = 0; i < capacity; ++i) {
+        source[i] = capacity - i;
+    }
+    mgr.RestoreTopN(shard, 1,
+                    {source.data(), capacity, capacity});
+
+    auto restored = mgr.GetTopN(shard, 1);
+    ASSERT_EQ(restored.count->load(), capacity);
+    std::vector<uint64_t> values(capacity);
+    for (uint32_t i = 0; i < capacity; ++i) values[i] = restored.values[i].load();
+    std::sort(values.begin(), values.end());
+    EXPECT_EQ(values.front(), 1u);
+    EXPECT_EQ(values.back(), capacity);
+}
 TEST(PerfShardTest, PerCoreTopNConcurrentSnapshotConverges) {
-    constexpr uint32_t capacity = SpDiag::defaultPerCoreTopN;
-    constexpr uint64_t samples = 5000;
+    constexpr uint32_t capacity = 1000;
+    constexpr uint64_t samples = 50000;
     SpDiag::PerfShardManager mgr;
     ASSERT_TRUE(mgr.Init(1, 2, capacity));
     SpDiag::LocalPerfShard& shard = mgr.GetShard();
@@ -140,5 +186,4 @@ TEST(PerfShardTest, PerCoreTopNConcurrentSnapshotConverges) {
     EXPECT_EQ(snapshotTopN[capacity], samples - capacity + 1);
     EXPECT_EQ(snapshotTopN.back(), samples);
 }
-
 #endif
