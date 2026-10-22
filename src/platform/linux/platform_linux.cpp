@@ -161,6 +161,12 @@ ShmHandle ShmCreate(const std::string& name, size_t size) {
         handle.errorCode = errno;
         return handle;
     }
+    if (fchmod(fd, 0666) != 0) {
+        handle.errorCode = errno;
+        close(fd);
+        shm_unlink(name.c_str());
+        return handle;
+    }
     if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
         handle.errorCode = errno;
         close(fd);
@@ -244,6 +250,40 @@ ShmHandle ShmOpenReadWrite(const std::string& name, size_t size) {
     return handle;
 }
 
+ShmExistence ShmCheckExistence(const std::string& name, int* errorCode) {
+    if (errorCode != nullptr) {
+        *errorCode = 0;
+    }
+    int fd = shm_open(name.c_str(), O_RDONLY | O_CLOEXEC, 0);
+    if (fd >= 0) {
+        close(fd);
+        return ShmExistence::PRESENT;
+    }
+    const int openError = errno;
+    if (openError == ENOENT) {
+        return ShmExistence::ABSENT;
+    }
+    if (errorCode != nullptr) {
+        *errorCode = openError;
+    }
+    return ShmExistence::ERROR;
+}
+
+bool ShmCheckReadWrite(const std::string& name, int* errorCode) {
+    if (errorCode != nullptr) {
+        *errorCode = 0;
+    }
+    int fd = shm_open(name.c_str(), O_RDWR | O_CLOEXEC, 0);
+    if (fd >= 0) {
+        close(fd);
+        return true;
+    }
+    if (errorCode != nullptr) {
+        *errorCode = errno;
+    }
+    return false;
+}
+
 void ShmClose(ShmHandle& handle) {
     if (handle.baseAddr) {
         munmap(handle.baseAddr, handle.mappedSize);
@@ -257,8 +297,21 @@ void ShmClose(ShmHandle& handle) {
     handle.objectSize = 0;
 }
 
-void ShmDestroy(const std::string& name) {
-    shm_unlink(name.c_str());
+bool ShmDestroy(const std::string& name, int* errorCode) {
+    if (errorCode != nullptr) {
+        *errorCode = 0;
+    }
+    if (shm_unlink(name.c_str()) == 0) {
+        return true;
+    }
+    const int unlinkError = errno;
+    if (unlinkError == ENOENT) {
+        return true;
+    }
+    if (errorCode != nullptr) {
+        *errorCode = unlinkError;
+    }
+    return false;
 }
 
 // ─── CPU ID ────────────────────────────────────────────────────────

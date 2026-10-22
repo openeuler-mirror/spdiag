@@ -12,6 +12,8 @@ file(GLOB MANAGER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
 add_library(spdiag_manager_lib STATIC ${MANAGER_SOURCES})
 
+target_compile_definitions(spdiag_manager_lib PRIVATE _GNU_SOURCE)
+
 target_include_directories(spdiag_manager_lib
     PUBLIC
         "${CMAKE_SOURCE_DIR}/include"
