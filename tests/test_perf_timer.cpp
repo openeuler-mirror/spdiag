@@ -21,6 +21,7 @@
 #include <thread>
 #include "manager/manager.h"
 #include "cli/cli_config.h"
+#include "sdk/global_perf_point_factory.h"
 #include "spdiag/perf_manager.h"
 #include "spdiag/perf_config.h"
 #include "spdiag/perf_key_defined.h"
@@ -125,13 +126,61 @@ TEST_F(PerfTimerTest, ShutdownStopsTimer) {
     const uint64_t before = reader.Header().dumpSeqNo.load(std::memory_order_acquire);
     PerfManager::Instance().Shutdown();   // 停 timer，同步执行末次 DoOneDump
     const uint64_t after = reader.Header().dumpSeqNo.load(std::memory_order_acquire);
-
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     const uint64_t after2 = reader.Header().dumpSeqNo.load(std::memory_order_acquire);
 
     EXPECT_GE(after, before);     // 末次 dump 可能推进
     EXPECT_EQ(after, after2);     // timer 已停：再等待 dumpSeqNo 不变
     reader.Close();
+}
+
+TEST(PerfTimerOnDemandTest, ConcurrentClearUsesLazyGenerationHandoff) {
+    using namespace SpDiag;
+    const std::string name = "/spdiag_test_clear_handoff_" +
+                             std::to_string(getpid());
+    auto config = MakeStartCfg(name.c_str());
+    config.dumpIntervalMs = 0;
+    SpDiagManager manager;
+    ASSERT_TRUE(manager.StartShm(config));
+    PerfConfig perfConfig;
+    perfConfig.shmName = name;
+    perfConfig.levelGate = 4;
+    PerfManager::Instance().Init(perfConfig);
+    ASSERT_TRUE(PerfManager::Instance().IsInitialized());
+
+    const uint32_t globalSlot = PerfManager::Instance().FastResolveSlot(
+        static_cast<uint32_t>(PerfKeyDefined::COMPUTE_MATMUL));
+    GlobalAccum& global = GlobalPerfPointFactory::Instance().Array()[globalSlot];
+    ShmReader clearReader;
+    ASSERT_TRUE(clearReader.Open(name));
+    BeginGlobalAccumUpdate(global);
+    global.goodCount.fetch_add(1, std::memory_order_relaxed);
+    bool clearResult = false;
+    std::atomic<bool> clearDone{false};
+    std::thread clearThread([&]() {
+        clearResult = manager.ClearData(config);
+        clearDone.store(true, std::memory_order_release);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(clearDone.load(std::memory_order_acquire));
+    EXPECT_EQ(clearReader.Header().dumpSeqNo.load(std::memory_order_acquire) & 1U,
+              0u);
+    global.totalTimeNs.fetch_add(1, std::memory_order_relaxed);
+    global.tickCount.fetch_add(1, std::memory_order_acq_rel);
+    clearThread.join();
+    ASSERT_TRUE(clearResult);
+    clearReader.Close();
+    ASSERT_TRUE(manager.RequestFreshDump(config));
+    ShmReader reader;
+    ASSERT_TRUE(reader.Open(name));
+    const GlobalPerfStat* globalStats = reader.ReadGlobalAccum();
+    ASSERT_NE(globalStats, nullptr);
+    EXPECT_EQ(globalStats[globalSlot].stat.tickCount, 0u);
+    EXPECT_EQ(globalStats[globalSlot].stat.backGoodCount, 0u);
+    EXPECT_EQ(globalStats[globalSlot].stat.totalTimeNs, 0u);
+    reader.Close();
+    PerfManager::Instance().Shutdown();
+    EXPECT_TRUE(manager.StopShm(config));
 }
 
 TEST(PerfTimerOnDemandTest, RequestPublishesOnceAndAcknowledges) {

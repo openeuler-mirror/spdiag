@@ -38,6 +38,7 @@ namespace detail {
 
 class ShmWriter;
 class PerfTimer;
+class PerfPoint;
 
 class PerfManager {
 public:
@@ -61,9 +62,11 @@ public:
     RunMode Mode() const;
     uint8_t LevelGate() const;
     uint32_t NumCores() const;
-    PerfShardManager& GetShardManager() { return shardManager_; }
+    PerfShardManager& GetShardManager();
 
 private:
+    friend class PerfPoint;
+    PerfShardManager& FastGetShardManager() { return shardManager_; }
     PerfManager();
     ~PerfManager();
 
@@ -71,6 +74,7 @@ private:
     bool ConnectToExistingShm(uint32_t dumpIntervalHint);
 
     void StartShmWatcher();
+    void WithdrawRegistration();
 
     RunMode     mode_ = RunMode::DEBUG;
     uint8_t     levelGate_ = 2;
@@ -80,7 +84,6 @@ private:
     std::atomic<bool> watcherStarted_{false};
     std::atomic<bool> shmWatcherStop_{false};
     std::unique_ptr<std::thread> shmWatcher_;
-    uint32_t generation_ = 0;
 #ifdef SPDIAG_ENABLE_PERFLOG
     std::atomic<bool> perflogEnabled_{false};
 #endif
@@ -88,6 +91,7 @@ private:
     uint32_t baseOffset_ = 0;
     uint32_t slotCount_ = 0;
     uint32_t programIndex_ = 0;
+    uint64_t processStartTimeTicks_ = 0;
     std::string programName_;
     std::mutex registryMutex_;
     std::mutex initMutex_;

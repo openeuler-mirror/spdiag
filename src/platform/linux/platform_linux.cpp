@@ -43,8 +43,11 @@
 
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <cerrno>
 #include <fcntl.h>
+#include <fstream>
+#include <sstream>
 #include <unistd.h>
 #include <sched.h>
 #include <time.h>
@@ -167,6 +170,17 @@ ShmHandle ShmCreate(const std::string& name, size_t size) {
         shm_unlink(name.c_str());
         return handle;
     }
+    struct statvfs fs {};
+    if (fstatvfs(fd, &fs) == 0) {
+        const __uint128_t available =
+            static_cast<__uint128_t>(fs.f_bavail) * fs.f_frsize;
+        if (static_cast<__uint128_t>(size) > available) {
+            handle.errorCode = ENOSPC;
+            close(fd);
+            shm_unlink(name.c_str());
+            return handle;
+        }
+    }
     if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
         handle.errorCode = errno;
         close(fd);
@@ -186,6 +200,29 @@ ShmHandle ShmCreate(const std::string& name, size_t size) {
     handle.objectSize = size;
     handle.fd         = fd;
     return handle;
+}
+
+uint64_t GetProcessStartTimeTicks(int32_t pid) {
+    if (pid <= 0) return 0;
+    std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+    std::string line;
+    if (!std::getline(stat, line)) return 0;
+    const size_t commEnd = line.rfind(')');
+    if (commEnd == std::string::npos || commEnd + 2 >= line.size()) return 0;
+    std::istringstream fields(line.substr(commEnd + 2));
+    std::string ignored;
+    for (int field = 3; field < 22; ++field) {
+        if (!(fields >> ignored)) return 0;
+    }
+    uint64_t startTime = 0;
+    fields >> startTime;
+    return startTime;
+}
+
+bool ProcessInstanceIsAlive(int32_t pid, uint64_t startTimeTicks) {
+    if (pid <= 0 || (::kill(pid, 0) != 0 && errno != EPERM)) return false;
+    return startTimeTicks == 0 ||
+           GetProcessStartTimeTicks(pid) == startTimeTicks;
 }
 
 ShmHandle ShmOpenReadOnly(const std::string& name, size_t size) {

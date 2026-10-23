@@ -42,6 +42,8 @@ bool      ShmCheckReadWrite(const std::string& name,
                             int* errorCode = nullptr);
 void      ShmClose(ShmHandle& handle);
 bool      ShmDestroy(const std::string& name, int* errorCode = nullptr);
+uint64_t  GetProcessStartTimeTicks(int32_t pid);
+bool      ProcessInstanceIsAlive(int32_t pid, uint64_t startTimeTicks);
 
 uint32_t  GetCurrentCpuId();
 uint64_t  GetTimestampNs();

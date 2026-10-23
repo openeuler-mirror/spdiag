@@ -14,6 +14,7 @@
 
 #include "file_lock_guard.h"
 #include "sdk/platform.h"
+#include "sdk/registry_file_guard.h"
 #include "sdk/shm_probe.h"
 #include "sdk/shm_writer.h"
 #include "spdiag/shm_layout.h"
@@ -53,12 +54,6 @@
 namespace SpDiag {
 
 namespace {
-
-bool ProcessIsAlive(int32_t pid) {
-    if (pid <= 0) return false;
-    if (::kill(pid, 0) == 0) return true;
-    return errno == EPERM;
-}
 
 std::chrono::milliseconds DumpRequestTimeout(uint32_t capacity) {
     const uint64_t timeout = std::max<uint64_t>(
@@ -395,23 +390,37 @@ bool SpDiagManager::RequestFreshDump(const Cli::CliConfig& config) {
     ShmWriter writer;
     if (!writer.Open(config.shmName, probe.totalSize)) return false;
     ShmHeader* header = writer.Header();
+    int lockError = 0;
+    auto registryGuard = RegistryFileGuard::AcquireFor(
+        writer.Fd(), std::chrono::seconds(10), &lockError);
+    if (!registryGuard) return false;
     ProgramEntry* registry = reinterpret_cast<ProgramEntry*>(
         reinterpret_cast<uint8_t*>(header) + header->registryOffset);
-    std::vector<uint32_t> targets;
+    std::vector<ProgramTarget> targets;
     for (uint32_t i = 0; i < header->registeredPrograms; ++i) {
-        if (registry[i].active && ProcessIsAlive(registry[i].pid)) {
-            targets.push_back(i);
+        const int32_t pid = __atomic_load_n(&registry[i].pid,
+                                             __ATOMIC_ACQUIRE);
+        if (registry[i].active && pid > 0 &&
+            Platform::ProcessInstanceIsAlive(
+                pid, registry[i].processStartTimeTicks)) {
+            targets.push_back(
+                {i, pid, registry[i].processStartTimeTicks});
         }
     }
     const uint64_t request = header->dumpRequestGeneration.fetch_add(
         1, std::memory_order_acq_rel) + 1;
+    registryGuard.reset();
     const auto deadline = std::chrono::steady_clock::now() +
                           DumpRequestTimeout(header->perCoreTopNCapacity);
     while (true) {
         bool complete = true;
-        for (uint32_t index : targets) {
-            if (!ProcessIsAlive(registry[index].pid)) continue;
-            if (__atomic_load_n(&registry[index].dumpAckGeneration,
+        for (const ProgramTarget& target : targets) {
+            const ProgramEntry& entry = registry[target.index];
+            if (__atomic_load_n(&entry.pid, __ATOMIC_ACQUIRE) != target.pid ||
+                entry.processStartTimeTicks != target.processStartTimeTicks ||
+                !Platform::ProcessInstanceIsAlive(
+                    target.pid, target.processStartTimeTicks)) continue;
+            if (__atomic_load_n(&entry.dumpAckGeneration,
                                 __ATOMIC_ACQUIRE) < request) {
                 complete = false;
                 break;

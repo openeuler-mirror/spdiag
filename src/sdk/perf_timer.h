@@ -41,6 +41,8 @@ private:
     void DumpLoop();
     bool DoOneDump();
     void Acknowledge(uint64_t requestGeneration);
+    void AcknowledgeClear(uint64_t requestGeneration);
+    void WithdrawRegistration();
     bool ClearRequested(ShmHeader* header);
     void MergeShard(void* dst, uint32_t dstMaxSlots,
                     const PerfStat* srcStats,
@@ -54,7 +56,6 @@ private:
     uint32_t            baseOffset_;
     uint32_t            slotCount_;
     uint32_t            programIndex_;
-    uint32_t            generation_ = 0;
     std::thread         thread_;
     std::atomic<bool>   running_{false};
     std::atomic<bool>   localDumpRequested_{false};
@@ -67,6 +68,7 @@ private:
     size_t snapshotTopNCountSize_ = 0;
     uint32_t snapshotStatsSize_ = 0;
     uint64_t observedDumpRequest_ = 0;
+    uint32_t generation_ = 0;
 };
 
 }

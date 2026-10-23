@@ -19,6 +19,10 @@
 
 namespace SpDiag {
 
+void PerfShardManager::Init(uint32_t numCores) {
+    (void)Init(numCores, MAX_PERF_SLOTS, defaultPerCoreTopN);
+}
+
 bool PerfShardManager::Init(uint32_t numCores, uint32_t slotCount,
                             uint32_t perCoreTopNCapacity) {
     if (numCores == 0 || slotCount == 0 || slotCount > MAX_PERF_SLOTS ||
@@ -38,6 +42,7 @@ bool PerfShardManager::Init(uint32_t numCores, uint32_t slotCount,
     }
     for (uint32_t i = 0; i < numCores; ++i) {
         shards_[i].coreId = i;
+        shards_[i].clearGeneration.store(0, std::memory_order_relaxed);
         for (uint32_t j = 0; j < MAX_PERF_SLOTS; ++j) {
             shards_[i].stats[j].reset();
         }
@@ -58,9 +63,12 @@ bool PerfShardManager::Init(uint32_t numCores, uint32_t slotCount,
             std::make_unique<std::atomic<uint64_t>[]>(valueCount);
         perCoreTopNStorage_.counts =
             std::make_unique<std::atomic<uint16_t>[]>(stateCount);
+        perCoreTopNStorage_.sequences =
+            std::make_unique<std::atomic<uint32_t>[]>(stateCount);
         for (size_t i = 0; i < stateCount; ++i) {
             std::atomic_init(perCoreTopNStorage_.counts.get() + i,
                              static_cast<uint16_t>(0));
+            std::atomic_init(perCoreTopNStorage_.sequences.get() + i, 0U);
         }
         for (uint32_t core = 0; core < numCores_; ++core) {
             for (uint32_t slot = 0; slot < slotCount_; ++slot) {
@@ -71,12 +79,16 @@ bool PerfShardManager::Init(uint32_t numCores, uint32_t slotCount,
                     stateIndex * perCoreTopNCapacity_;
                 shards_[core].perCoreTopNCounts[slot] =
                     perCoreTopNStorage_.counts.get() + stateIndex;
+                shards_[core].perCoreTopNSequences[slot] =
+                    perCoreTopNStorage_.sequences.get() + stateIndex;
+                shards_[core].perCoreTopNInitialized[slot] = 0;
             }
         }
     } catch (const std::bad_alloc&) {
         shards_.reset();
         perCoreTopNStorage_.values.reset();
         perCoreTopNStorage_.counts.reset();
+        perCoreTopNStorage_.sequences.reset();
         numCores_ = 0;
         slotCount_ = 0;
         return false;
@@ -93,13 +105,6 @@ LocalPerfShard* PerfShardManager::GetShardArray() {
     return shards_.get();
 }
 
-void PerfShardManager::Clear() {
-    for (uint32_t core = 0; core < numCores_; ++core) {
-        shards_[core].reset();
-        shards_[core].coreId = core;
-    }
-}
-
 #ifdef SPDIAG_ENABLE_PERCENTILE
 void PerfShardManager::RestoreTopN(LocalPerfShard& shard, uint32_t slot,
                                    ConstTopNView source) {
@@ -112,33 +117,66 @@ void PerfShardManager::RestoreTopN(LocalPerfShard& shard, uint32_t slot,
     for (uint32_t i = 0; i < count; ++i) {
         InsertTopNUnchecked(destination, source.values[i]);
     }
+    shard.clearGeneration.store(GetClearGeneration(),
+                                std::memory_order_release);
 }
 
-void PerfShardManager::SnapshotTopN(uint64_t* values, uint16_t* counts,
+bool PerfShardManager::SnapshotTopN(uint64_t* values, uint16_t* counts,
                                     LocalPerfShard& active) {
     if (values == nullptr || counts == nullptr) {
-        return;
+        return false;
+    }
+    bool complete = true;
+    const uint64_t generation = GetClearGeneration();
+    if (active.clearGeneration.load(std::memory_order_acquire) != generation) {
+        std::fill(counts, counts + slotCount_, 0);
+        return true;
     }
     for (uint32_t slot = 0; slot < slotCount_; ++slot) {
         const auto source = GetTopN(active, slot);
-        const uint32_t count = std::min<uint32_t>(
-            source.count == nullptr ? 0 : source.count->load(
-                std::memory_order_acquire),
-            perCoreTopNCapacity_);
-        counts[slot] = static_cast<uint16_t>(count);
         const size_t offset = static_cast<size_t>(slot) *
                               perCoreTopNCapacity_;
-        for (uint32_t i = 0; i < count; ++i) {
-            values[offset + i] = source.values[i].load(
+        bool stable = false;
+        for (uint32_t retry = 0; retry < 8; ++retry) {
+            const uint32_t sequence = source.sequence->load(
                 std::memory_order_relaxed);
+            if ((sequence & 1U) != 0) {
+                __asm__ volatile("yield" ::: "memory");
+                continue;
+            }
+            // Keep all heap loads between the two sequence observations.
+            std::atomic_thread_fence(std::memory_order_acquire);
+            const uint32_t count = std::min<uint32_t>(
+                source.count->load(std::memory_order_acquire),
+                perCoreTopNCapacity_);
+            for (uint32_t i = 0; i < count; ++i) {
+                values[offset + i] = source.values[i].load(
+                    std::memory_order_relaxed);
+            }
+            std::atomic_thread_fence(std::memory_order_acq_rel);
+            if (source.sequence->load(std::memory_order_relaxed) == sequence) {
+                counts[slot] = static_cast<uint16_t>(count);
+                stable = true;
+                break;
+            }
+        }
+        if (!stable) {
+            counts[slot] = 0;
+            complete = false;
         }
     }
+    return complete;
 }
 #endif
 
 void PerfShardManager::SnapshotStatsAndReset(PerfStat* snapshotStats,
                                              LocalPerfShard& active) {
     if (snapshotStats == nullptr) {
+        return;
+    }
+    const uint64_t generation = GetClearGeneration();
+    if (active.clearGeneration.load(std::memory_order_acquire) != generation) {
+        for (uint32_t j = 0; j < slotCount_; ++j) snapshotStats[j].reset();
         return;
     }
     for (uint32_t j = 0; j < slotCount_; ++j) {
@@ -193,7 +231,7 @@ void PerfShardManager::SnapshotAndReset(LocalPerfShard& snapshot,
     std::vector<uint64_t> snapshotTopN(
         static_cast<size_t>(slotCount_) * perCoreTopNCapacity_);
     std::vector<uint16_t> counts(slotCount_);
-    SnapshotTopN(snapshotTopN.data(), counts.data(), active);
+    (void)SnapshotTopN(snapshotTopN.data(), counts.data(), active);
     for (uint32_t slot = 0; slot < slotCount_; ++slot) {
         snapshot.stats[slot].topNCount = counts[slot];
     }

@@ -36,7 +36,6 @@ constexpr uint32_t maxTopN           = defaultPerCoreTopN;
 #endif
 constexpr uint32_t perflogTimestampCount = 100;
 constexpr uint32_t nameLen           = 64;
-
 inline uint64_t DumpWindowTimeoutMs(uint32_t perCoreTopNCapacity,
                                     uint32_t registeredPrograms) {
     const uint64_t writers = std::max<uint32_t>(1, registeredPrograms);
@@ -44,7 +43,7 @@ inline uint64_t DumpWindowTimeoutMs(uint32_t perCoreTopNCapacity,
     return std::max<uint64_t>(
         500, std::min<uint64_t>(60000, writers * perWriterMs));
 }
-constexpr uint8_t shmLayoutAbiRevision = 3;
+constexpr uint8_t shmLayoutAbiRevision = 5;
 constexpr uint8_t shmFeaturePercentile = 1U << 0;
 constexpr uint8_t shmFeaturePerfLog = 1U << 1;
 
@@ -68,7 +67,15 @@ struct ProgramEntry {
     int32_t  pid;
     uint8_t  active;
     uint8_t  reserved[3];
+    uint64_t processStartTimeTicks;
     alignas(8) uint64_t dumpAckGeneration;
+    uint64_t clearAckGeneration;
+};
+
+struct ProgramTarget {
+    uint32_t index;
+    int32_t pid;
+    uint64_t processStartTimeTicks;
 };
 
 struct alignas(64) PerfStat {
@@ -157,13 +164,17 @@ struct alignas(64) GlobalPerfStat {
 struct LocalPerfShard {
     uint32_t coreId;
     PerfStat stats[MAX_PERF_SLOTS];
+    std::atomic<uint64_t> clearGeneration{0};
 #ifdef SPDIAG_ENABLE_PERCENTILE
     std::atomic<uint64_t>* perCoreTopNValues[MAX_PERF_SLOTS]{};
     std::atomic<uint16_t>* perCoreTopNCounts[MAX_PERF_SLOTS]{};
+    std::atomic<uint32_t>* perCoreTopNSequences[MAX_PERF_SLOTS]{};
+    uint16_t perCoreTopNInitialized[MAX_PERF_SLOTS]{};
 #endif
 
     void reset() {
         coreId = 0;
+        clearGeneration.store(0, std::memory_order_relaxed);
         for (uint32_t i = 0; i < MAX_PERF_SLOTS; ++i) {
             stats[i].reset();
 #ifdef SPDIAG_ENABLE_PERCENTILE
@@ -194,7 +205,7 @@ struct alignas(64) GlobalAccum {
     std::atomic<uint64_t> minTimeNs{0};
     std::atomic<uint64_t> maxTimeNs{0};
     std::atomic<uint32_t> level{0};
-    char _pad[4];
+    std::atomic<uint32_t> updateState{0};
 #ifdef SPDIAG_ENABLE_PERCENTILE
     // 无锁 top-100 最大耗时（best-effort 近似，用于 P99 计算）
     // 多线程并发写入时可能有少量丢失，对百分位精度影响可忽略
@@ -205,6 +216,45 @@ struct alignas(64) GlobalAccum {
 };
 static_assert(sizeof(GlobalAccum) % 64 == 0,
               "GlobalAccum must be cache-line aligned (multiple of 64); layout corruption detected");
+
+constexpr uint32_t globalAccumLockBit = 1U << 31;
+constexpr uint32_t globalAccumStartedMask = globalAccumLockBit - 1;
+
+inline void BeginGlobalAccumUpdate(GlobalAccum& accum) {
+    uint32_t state = accum.updateState.load(std::memory_order_relaxed);
+    for (;;) {
+        if ((state & globalAccumLockBit) == 0) {
+            const uint32_t next = (state + 1) & globalAccumStartedMask;
+            if (accum.updateState.compare_exchange_weak(
+                    state, next, std::memory_order_acquire,
+                    std::memory_order_relaxed)) return;
+        } else {
+            state = accum.updateState.load(std::memory_order_acquire);
+        }
+    }
+}
+
+inline uint64_t LockGlobalAccum(GlobalAccum& accum) {
+    uint32_t state = accum.updateState.load(std::memory_order_relaxed);
+    for (;;) {
+        if ((state & globalAccumLockBit) == 0 &&
+            accum.updateState.compare_exchange_weak(
+                state, state | globalAccumLockBit,
+                std::memory_order_acq_rel, std::memory_order_relaxed)) break;
+        if ((state & globalAccumLockBit) != 0) {
+            state = accum.updateState.load(std::memory_order_acquire);
+        }
+    }
+    const uint32_t started = state & globalAccumStartedMask;
+    while ((static_cast<uint32_t>(accum.tickCount.load(
+                std::memory_order_acquire)) & globalAccumStartedMask) != started) {}
+    return accum.tickCount.load(std::memory_order_relaxed);
+}
+
+inline void UnlockGlobalAccum(GlobalAccum& accum) {
+    accum.tickCount.store(0, std::memory_order_relaxed);
+    accum.updateState.store(0, std::memory_order_release);
+}
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
 
