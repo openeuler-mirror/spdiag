@@ -17,6 +17,7 @@
 #include "spdiag/perf_level.h"
 #include "spdiag/perf_config.h"
 #include "src/runtime/shm_reader.h"
+#include "src/runtime/plugins/custom_perfpoint/custom_perfpoint.h"
 #include "src/manager/manager.h"
 #include "src/manager/aggregator.h"
 #include "src/cli/cli_config.h"
@@ -29,6 +30,8 @@
 #include <chrono>
 #include <cstring>
 #include <cstdio>
+#include <filesystem>
+#include <unistd.h>
 
 using namespace SpDiag;
 
@@ -58,6 +61,161 @@ protected:
     Cli::CliConfig shmConfig;
     SpDiagManager manager;
 };
+
+class ManagerPersistenceBoundaryTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        static std::atomic<uint32_t> sequence{0};
+        const auto id = sequence.fetch_add(1, std::memory_order_relaxed);
+        const std::string suffix = std::to_string(getpid()) + "_" +
+            std::to_string(id);
+        config.command = Cli::Command::START;
+        config.shmName = "/spdiag_test_persist_" + suffix;
+        config.dataDir = "/tmp/spdiag_test_persist_" + suffix;
+        config.numCores = 2;
+        config.maxSlots = MAX_PERF_SLOTS;
+        config.maxPrograms = 1;
+        config.dumpIntervalMs = 0;
+
+        std::filesystem::remove_all(config.dataDir);
+        (void)manager.StopShm(config);
+        manager.RegisterPluginFactory("custom_perfpoint", []() -> PluginPtr {
+            return std::make_unique<CustomPerfpoint>();
+        });
+        ASSERT_TRUE(manager.StartShm(config));
+    }
+
+    void TearDown() override {
+        config.command = Cli::Command::STOP;
+        (void)manager.StopShm(config);
+        std::filesystem::remove_all(config.dataDir);
+    }
+
+    AggregatedStat MakeBaseline() const {
+        AggregatedStat stat;
+        stat.globalSlotIndex = 7;
+        stat.programName = "persist-boundary";
+        stat.moduleName = "Storage";
+        stat.pointName = "Commit";
+        stat.level = static_cast<uint8_t>(PerfLevel::KEY_MODULE);
+        stat.totalGoodCount = 80;
+        stat.totalBadCount = 10;
+        stat.totalNotCount = 10;
+        stat.totalTickCount = 100;
+        stat.totalTimeNs = 1000;
+        stat.globalMinTimeNs = 5;
+        stat.globalMaxTimeNs = 50;
+        stat.avgTimeNs = 10.0;
+        return stat;
+    }
+
+    void ExpectLifecycleRecreateResetsSnapshot(bool restart) {
+        PersistentAggr persisted(config.dataDir);
+        const auto baseline = MakeBaseline();
+        ASSERT_EQ(persisted.Update({baseline}).size(), 1u);
+
+        if (restart) {
+            ASSERT_TRUE(manager.RestartShm(config));
+        } else {
+            ASSERT_TRUE(manager.StopShm(config));
+            ASSERT_TRUE(manager.StartShm(config));
+        }
+        ASSERT_TRUE(manager.RequestFreshDump(config));
+        EXPECT_TRUE(manager.CollectAndAggregate(config).aggregated.empty());
+        EXPECT_FALSE(std::filesystem::exists(config.dataDir + "/snapshot.bin"));
+
+        auto current = baseline;
+        current.totalGoodCount = 120;
+        current.totalBadCount = 15;
+        current.totalNotCount = 15;
+        current.totalTickCount = 150;
+        current.totalTimeNs = 1500;
+        const auto delta = persisted.Update({current});
+        ASSERT_EQ(delta.size(), 1u);
+        EXPECT_EQ(delta[0].totalTickCount, 150u);
+        const auto accumulated = persisted.Load();
+        ASSERT_EQ(accumulated.size(), 1u);
+        EXPECT_EQ(accumulated[0].totalTickCount, 250u);
+    }
+
+    Cli::CliConfig config;
+    SpDiagManager manager;
+};
+
+TEST_F(ManagerPersistenceBoundaryTest,
+       NoSampleCollectionDoesNotCreatePersistentState) {
+    ASSERT_TRUE(manager.RequestFreshDump(config));
+    const auto result = manager.CollectAndAggregate(config);
+
+    EXPECT_TRUE(result.aggregated.empty());
+    EXPECT_TRUE(result.delta.empty());
+    EXPECT_FALSE(std::filesystem::exists(config.dataDir + "/aggr.bin"));
+    EXPECT_FALSE(std::filesystem::exists(config.dataDir + "/snapshot.bin"));
+    EXPECT_FALSE(std::filesystem::exists(config.dataDir + "/history.bin"));
+}
+
+TEST_F(ManagerPersistenceBoundaryTest,
+       NoSampleCollectionPreservesExistingPersistentState) {
+    PersistentAggr persisted(config.dataDir);
+    const auto baseline = MakeBaseline();
+    ASSERT_EQ(persisted.Update({baseline}).size(), 1u);
+
+    const auto aggrSize = std::filesystem::file_size(
+        config.dataDir + "/aggr.bin");
+    const auto snapshotSize = std::filesystem::file_size(
+        config.dataDir + "/snapshot.bin");
+
+    ASSERT_TRUE(manager.RequestFreshDump(config));
+    const auto result = manager.CollectAndAggregate(config);
+
+    EXPECT_TRUE(result.aggregated.empty());
+    EXPECT_TRUE(result.delta.empty());
+    EXPECT_EQ(std::filesystem::file_size(config.dataDir + "/aggr.bin"),
+              aggrSize);
+    EXPECT_EQ(std::filesystem::file_size(config.dataDir + "/snapshot.bin"),
+              snapshotSize);
+    EXPECT_FALSE(std::filesystem::exists(config.dataDir + "/history.bin"));
+
+    const auto loaded = persisted.Load();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0].totalTickCount, baseline.totalTickCount);
+    EXPECT_EQ(loaded[0].totalTimeNs, baseline.totalTimeNs);
+}
+
+TEST_F(ManagerPersistenceBoundaryTest,
+       ExplicitClearResetsOnlyTheSnapshotBaseline) {
+    PersistentAggr persisted(config.dataDir);
+    const auto baseline = MakeBaseline();
+    ASSERT_EQ(persisted.Update({baseline}).size(), 1u);
+
+    ASSERT_TRUE(manager.ClearData(config));
+    EXPECT_TRUE(std::filesystem::exists(config.dataDir + "/aggr.bin"));
+    EXPECT_FALSE(std::filesystem::exists(config.dataDir + "/snapshot.bin"));
+
+    auto afterClear = baseline;
+    afterClear.totalGoodCount = 120;
+    afterClear.totalBadCount = 15;
+    afterClear.totalNotCount = 15;
+    afterClear.totalTickCount = 150;
+    afterClear.totalTimeNs = 1500;
+    const auto delta = persisted.Update({afterClear});
+    ASSERT_EQ(delta.size(), 1u);
+    EXPECT_EQ(delta[0].totalTickCount, 150u);
+
+    const auto accumulated = persisted.Load();
+    ASSERT_EQ(accumulated.size(), 1u);
+    EXPECT_EQ(accumulated[0].totalTickCount, 250u);
+}
+
+TEST_F(ManagerPersistenceBoundaryTest,
+       RestartResetsTheSnapshotBaseline) {
+    ExpectLifecycleRecreateResetsSnapshot(true);
+}
+
+TEST_F(ManagerPersistenceBoundaryTest,
+       StopThenStartResetsTheSnapshotBaseline) {
+    ExpectLifecycleRecreateResetsSnapshot(false);
+}
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
 TEST(ConfigurableTopNIntegrationTest, ProducerRetainsConfiguredCapacity) {

@@ -28,6 +28,8 @@ public:
 
     std::vector<AggregatedStat> Update(const std::vector<AggregatedStat>& currentSnapshot);
 
+    bool ResetSnapshot();
+
     const std::string& DataDir() const;
 
 private:

@@ -344,6 +344,11 @@ CollectResult SpDiagManager::CollectAndAggregate(const Cli::CliConfig& config) {
         result.globalAccumCount);
     result.aggregated = aggregator.Results();
 
+    // Persistence advances only after this collection observed statistics.
+    if (result.aggregated.empty()) {
+        return result;
+    }
+
     PersistentAggr persistentAggr(config.dataDir);
     result.delta = persistentAggr.Update(result.aggregated);
 
@@ -454,6 +459,13 @@ std::vector<DumpRecord> SpDiagManager::QueryHistory(const Cli::CliConfig& config
 bool SpDiagManager::ClearData(const Cli::CliConfig& config) {
     if (!processor_.ClearSharedMemory(config.shmName)) {
         SPDIAG_LOG_ERROR(LogModule::MANAGER, "failed to clear shared memory");
+        return false;
+    }
+
+    PersistentAggr persistentAggr(config.dataDir);
+    if (!persistentAggr.ResetSnapshot()) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER,
+                         "failed to reset persistent snapshot after clear");
         return false;
     }
 
@@ -605,6 +617,12 @@ bool SpDiagManager::RecreateShm(const Cli::CliConfig& config,
     int destroyError = 0;
     if (!DestroyShm(config.shmName, &destroyError)) {
         PrintShmOperationError("remove", config.shmName, destroyError);
+        return false;
+    }
+    PersistentAggr persistentAggr(config.dataDir);
+    if (!persistentAggr.ResetSnapshot()) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER,
+                         "failed to reset persistent snapshot for new SHM");
         return false;
     }
     if (!CreateShm(config)) {
