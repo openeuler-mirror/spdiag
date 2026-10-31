@@ -148,3 +148,12 @@ set(SPDIAG_USER_DEF_TEST "${CMAKE_SOURCE_DIR}/tests/user_def_test/build/user_def
 if(EXISTS "${SPDIAG_USER_DEF_TEST}")
     add_test(NAME user_def_test COMMAND "${SPDIAG_USER_DEF_TEST}")
 endif()
+
+add_test(
+    NAME test_install_public_files
+    COMMAND ${CMAKE_COMMAND}
+        -DSPDIAG_BUILD_DIR=${CMAKE_BINARY_DIR}
+        -DSPDIAG_INSTALL_DIR=${CMAKE_BINARY_DIR}/test_install_public_files
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/test_install_public_files.cmake
+)
+set_tests_properties(test_install_public_files PROPERTIES RUN_SERIAL TRUE)
