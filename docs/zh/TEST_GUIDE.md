@@ -93,7 +93,7 @@ ctest --test-dir build --output-on-failure
 
 成功后终端打印 `RPM output directory` 和本次 RPM 完整路径。RPM 构建目录位于打包工作目录中，不会生成仓库本地的 `build/tests/`；需要手动运行上文的测试二进制时，先用 CMake 完成本地开发构建。
 
-RPM 入口的隔离回归检查不需要 aarch64 或 `rpmbuild`，使用真实 Git 归档和模拟打包命令验证默认入口、兼容入口、功能开关及错误参数；不会安装系统文件：
+RPM 入口的隔离回归检查不需要 aarch64 或 `rpmbuild`，使用真实 Git 归档和模拟打包命令验证默认入口、兼容入口、功能开关及错误参数。测试会把结束提示中的六条安装/重装命令交给参数记录器执行，检查含空格、引号的路径以及三种包集合，并确认不会误选历史包、源码包或调试包；不会安装系统文件：
 
 ```bash
 bash tests/test_build_rpm.sh

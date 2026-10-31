@@ -53,7 +53,7 @@ bash build.sh --help
 
 `build.sh` 始终以 RelWithDebInfo 构建，执行单元测试，同时生成动态 SDK 和静态 SDK 的 RPM；不构建 examples，也不清理本地 `build/`、运行数据或共享内存。打包条件、产物和安装命令见第 3 节。
 
-构建成功后，终端会显示 `RPM output directory: <仓库绝对路径>/output`，并分别列出二进制 RPM 和源码 RPM 的完整路径。接着按第 3.3 节安装所需的二进制包，再运行 `spdiag --version` 和 `spdiag --help`；仅完成构建不会更新系统中的 `spdiag`。
+构建成功后，终端会显示 `RPM output directory: <仓库绝对路径>/output` 和本次文件列表，再按“CLI/runtime”“dynamic SDK”“static SDK”分别给出安装/升级和同版本覆盖重装的完整命令。选择一种用途和一种操作，复制相应命令执行，然后运行 `spdiag --version` 和 `spdiag --help`。命令只引用本次构建的二进制 RPM，使用绝对路径并转义空格、引号；仅完成构建不会更新系统中的 `spdiag`。
 
 原来的 `-r/-c/-t/-e/-i/-g/-l/-f/-w/-W` 源码构建选项已移除，传入会报错。需要 Debug、examples、本地 GTest 或其他 CMake 开关时，使用下面的本地开发流程。
 
@@ -178,7 +178,7 @@ bash build.sh -m on -o off -k off
 RPM_TOPDIR=/data/rpmbuild bash build.sh
 ```
 
-`RPM_TOPDIR` 只改变打包工作目录，交付产物仍然复制到仓库的 `output/`。所有文件复制成功后会打印构建成功提示、`output/` 的绝对路径，以及本次二进制 RPM 和源码 RPM 的文件列表。也可以从仓库根目录查看：
+`RPM_TOPDIR` 只改变打包工作目录，交付产物仍然复制到仓库的 `output/`。所有文件复制成功后会打印构建成功提示、`output/` 的绝对路径、本次 RPM 文件列表和安装/覆盖重装命令。源码包、调试包以及 `output/` 中遗留的历史包不会加入这些安装命令。也可以从仓库根目录查看：
 
 ```bash
 ls -1 output/*.rpm
@@ -197,7 +197,9 @@ spdiag-<version>-<release>.<dist>.src.rpm
 
 ### 3.3 安装已经生成的 RPM
 
-建议使用 `dnf` 安装本地 RPM，以便自动处理依赖。下面的 `[0-9]*` 用来避免主包通配符误匹配 `-devel`、`-static` 和调试包。
+建议直接复制构建结束时打印的命令：首次安装或升级用 `sudo dnf install`，已经安装相同 Version/Release 的包时用 `sudo dnf reinstall`。每种操作都有仅 CLI、动态 SDK、静态 SDK 三种包集合，任选符合用途的一组；`reinstall` 要求选中的包已经安装，新增开发包或静态包时使用 `install`。
+
+下面给出相同包集合的相对路径写法，从仓库根目录执行。`dnf` 会自动处理依赖；`[0-9]*` 用来避免主包通配符误匹配 `-devel`、`-static` 和调试包。若目录中存在多个版本或功能组合，以构建结束时打印的具体文件路径为准。
 
 #### 只安装 CLI 和运行库
 
@@ -264,7 +266,7 @@ spdiag --help
 
 ```bash
 spdiag stop
-sudo dnf upgrade \
+sudo dnf install \
   ./output/spdiag-[0-9]*.aarch64.rpm \
   ./output/spdiag-devel-[0-9]*.aarch64.rpm
 ```
@@ -278,6 +280,21 @@ spdiag stop
 sudo dnf reinstall ./output/spdiag-[0-9]*.aarch64.rpm
 spdiag --version
 ```
+
+动态 SDK 和静态 SDK 的同版本覆盖重装命令分别为：
+
+```bash
+# 动态 SDK：主包 + 开发包
+sudo dnf reinstall ./output/spdiag-[0-9]*.aarch64.rpm \
+  ./output/spdiag-devel-[0-9]*.aarch64.rpm
+
+# 静态 SDK：主包 + 开发包 + 静态包
+sudo dnf reinstall ./output/spdiag-[0-9]*.aarch64.rpm \
+  ./output/spdiag-devel-[0-9]*.aarch64.rpm \
+  ./output/spdiag-static-[0-9]*.aarch64.rpm
+```
+
+这些包集合与构建结束提示一致；终端输出使用本次实际文件的绝对路径，方便直接复制执行。
 
 切换到较低发行号时使用 `dnf downgrade`。直接使用 RPM 时，安装或升级使用 `rpm -Uvh`，相同版本重装使用 `rpm -Uvh --replacepkgs`。
 

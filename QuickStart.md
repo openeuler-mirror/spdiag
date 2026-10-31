@@ -19,7 +19,7 @@ spdiag --version
 spdiag --help
 ```
 
-构建结束会分别列出二进制 RPM 和源码 RPM 的完整路径。只使用 Memstat/Cachestat 等 CLI 功能时，仅安装主包即可；静态链接业务程序时再安装 `spdiag-static`。重新构建相同版本后，用 `dnf reinstall` 重装已安装的对应包；升级、配置迁移及历史源码安装清理见[安装指南](INSTALLATION.md#35-升级配置文件和卸载)。
+构建结束会列出 RPM 完整路径，并按仅 CLI、动态 SDK、静态 SDK 给出可直接复制的命令：首次安装或升级使用 `sudo dnf install`，相同 Version/Release 的对应包已经安装时使用 `sudo dnf reinstall` 覆盖重装。命令只包含本次生成的相应二进制包。只使用 Memstat/Cachestat 等 CLI 功能时选择主包命令；静态 SDK 选择主包、开发包、静态包三者一起操作的命令。升级、配置迁移及历史源码安装清理见[安装指南](INSTALLATION.md#35-升级配置文件和卸载)。
 
 安装完成后再进行下文的 SDK 接入和命令操作。`build.sh` 不构建示例程序；需要 `build/examples/` 时，另按[示例说明](examples/README.md)使用 CMake。
 

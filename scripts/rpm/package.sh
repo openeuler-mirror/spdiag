@@ -234,6 +234,22 @@ if [ "${#SOURCE_RPM_FILES[@]}" -eq 0 ]; then
     exit 1
 fi
 
+RUNTIME_RPM=""
+DEVEL_RPM=""
+STATIC_RPM=""
+for rpm_file in "${RPM_FILES[@]}"; do
+    rpm_name="$(basename "$rpm_file")"
+    case "$rpm_name" in
+        "$PACKAGE_NAME"-[0-9]*.rpm) RUNTIME_RPM="$OUTPUT_DIR/$rpm_name" ;;
+        "$PACKAGE_NAME-devel"-[0-9]*.rpm) DEVEL_RPM="$OUTPUT_DIR/$rpm_name" ;;
+        "$PACKAGE_NAME-static"-[0-9]*.rpm) STATIC_RPM="$OUTPUT_DIR/$rpm_name" ;;
+    esac
+done
+if [ -z "$RUNTIME_RPM" ] || [ -z "$DEVEL_RPM" ] || [ -z "$STATIC_RPM" ]; then
+    echo "package.sh: missing spdiag, spdiag-devel or spdiag-static RPM." >&2
+    exit 1
+fi
+
 for rpm_file in "${RPM_FILES[@]}" "${SOURCE_RPM_FILES[@]}"; do
     cp -p "$rpm_file" "$OUTPUT_DIR/"
 done
@@ -250,5 +266,24 @@ for rpm_file in "${SOURCE_RPM_FILES[@]}"; do
     echo "  $OUTPUT_DIR/$(basename "$rpm_file")"
 done
 echo ""
-echo "Install the binary RPMs with dnf/yum before running spdiag."
+echo "Before replacing an existing installation: run 'spdiag stop' and stop applications using the old SDK."
+echo "Choose ONE package set and ONE action below."
+print_install_commands() {
+    local package_set="$1"
+    shift
+    echo "Install/upgrade ($package_set):"
+    printf '  sudo dnf install'
+    printf ' %q' "$@"
+    printf '\n'
+    echo "Reinstall the same version ($package_set, already installed):"
+    printf '  sudo dnf reinstall'
+    printf ' %q' "$@"
+    printf '\n'
+}
+print_install_commands "CLI/runtime" "$RUNTIME_RPM"
+print_install_commands "dynamic SDK" "$RUNTIME_RPM" "$DEVEL_RPM"
+print_install_commands "static SDK" "$RUNTIME_RPM" "$DEVEL_RPM" "$STATIC_RPM"
+echo "Verify after installation:"
+echo "  spdiag --version"
+echo "  spdiag --help"
 echo "Installation and same-version reinstall instructions: $PROJECT_DIR/INSTALLATION.md"

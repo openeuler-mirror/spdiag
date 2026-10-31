@@ -9,7 +9,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEST_DIR"' EXIT
-REPO="$TEST_DIR/source tree"
+REPO="$TEST_DIR/source tree's"
 export RPM_TOPDIR="$TEST_DIR/rpm work"
 export RPM_ARGS_LOG="$TEST_DIR/rpm-args"
 export RPM_CALLS_LOG="$TEST_DIR/rpm-calls"
@@ -23,6 +23,7 @@ git -C "$REPO" add .
 git -C "$REPO" -c user.name=Test -c user.email=test@example.com \
     -c commit.gpgsign=false commit -qm 'RPM build fixture'
 VERSION="$(awk '$1 == "Version:" { print $2; exit }' "$REPO/spdiag.spec")"
+export RPM_FIXTURE_VERSION="$VERSION"
 
 cat > "$TEST_DIR/bin/rpmbuild" <<'EOF'
 #!/bin/bash
@@ -34,9 +35,13 @@ if [ "${RPMBUILD_FAIL:-0}" -ne 0 ]; then
 fi
 mkdir -p "$RPM_TOPDIR/RPMS/aarch64" "$RPM_TOPDIR/SRPMS"
 for name in spdiag spdiag-devel spdiag-static; do
-    touch "$RPM_TOPDIR/RPMS/aarch64/$name-test.aarch64.rpm"
+    if [ "$name" = spdiag-static ] && [ "${RPMBUILD_MISSING_STATIC:-0}" -eq 1 ]; then
+        continue
+    fi
+    touch "$RPM_TOPDIR/RPMS/aarch64/$name-$RPM_FIXTURE_VERSION-1.aarch64.rpm"
 done
-touch "$RPM_TOPDIR/SRPMS/spdiag-test.src.rpm"
+touch "$RPM_TOPDIR/RPMS/aarch64/spdiag-debuginfo-$RPM_FIXTURE_VERSION-1.aarch64.rpm"
+touch "$RPM_TOPDIR/SRPMS/spdiag-$RPM_FIXTURE_VERSION-1.src.rpm"
 EOF
 
 # A packaging invocation must never invoke the old host build/install path.
@@ -65,19 +70,49 @@ expect_error() {
 
 # Call from outside the repository and preserve unrelated local build files.
 cd "$TEST_DIR"
-mkdir -p "$REPO/build"
+mkdir -p "$REPO/build" "$REPO/output"
+touch "$REPO/output/spdiag-0.0.0-0.aarch64.rpm"
 touch "$REPO/build/keep" "$REPO/untracked"
 bash "$REPO/build.sh" > "$TEST_DIR/result" 2>&1
 for name in spdiag spdiag-devel spdiag-static; do
-    [ -f "$REPO/output/$name-test.aarch64.rpm" ] || fail "missing $name RPM"
+    [ -f "$REPO/output/$name-$RPM_FIXTURE_VERSION-1.aarch64.rpm" ] || fail "missing $name RPM"
 done
-[ -f "$REPO/output/spdiag-test.src.rpm" ] || fail 'missing source RPM'
+[ -f "$REPO/output/spdiag-$RPM_FIXTURE_VERSION-1.src.rpm" ] || fail 'missing source RPM'
 grep -Fxq 'Build completed successfully.' "$TEST_DIR/result" || fail 'missing build completion message'
 grep -Fxq "RPM output directory: $REPO/output" "$TEST_DIR/result" || fail 'missing absolute output directory'
 for name in spdiag spdiag-devel spdiag-static; do
-    grep -Fxq "  $REPO/output/$name-test.aarch64.rpm" "$TEST_DIR/result" || fail "missing $name RPM path"
+    grep -Fxq "  $REPO/output/$name-$RPM_FIXTURE_VERSION-1.aarch64.rpm" "$TEST_DIR/result" || fail "missing $name RPM path"
 done
-grep -Fxq "  $REPO/output/spdiag-test.src.rpm" "$TEST_DIR/result" || fail 'missing source RPM path'
+grep -Fxq "  $REPO/output/spdiag-$RPM_FIXTURE_VERSION-1.src.rpm" "$TEST_DIR/result" || fail 'missing source RPM path'
+
+# Execute the printed commands against an argument recorder. Spaces and quotes
+# in the repository path must survive; stale, debug and source RPMs must stay out.
+mkdir -p "$TEST_DIR/command-bin"
+export INSTALL_ARGS_LOG="$TEST_DIR/install-args"
+cat > "$TEST_DIR/command-bin/sudo" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+[ "$1" = dnf ] || exit 99
+shift
+printf '%s\0' "$@" > "$INSTALL_ARGS_LOG"
+EOF
+chmod +x "$TEST_DIR/command-bin/sudo"
+mapfile -t INSTALL_COMMANDS < <(sed -n 's/^  \(sudo dnf .*\)$/\1/p' "$TEST_DIR/result")
+[ "${#INSTALL_COMMANDS[@]}" -eq 6 ] || fail 'expected install/reinstall for three package sets'
+for index in "${!INSTALL_COMMANDS[@]}"; do
+    PATH="$TEST_DIR/command-bin:$PATH" bash -c "${INSTALL_COMMANDS[index]}"
+    action=install
+    [ $((index % 2)) -eq 0 ] || action=reinstall
+    args=("$action" "$REPO/output/spdiag-$RPM_FIXTURE_VERSION-1.aarch64.rpm")
+    if [ "$index" -ge 2 ]; then
+        args+=("$REPO/output/spdiag-devel-$RPM_FIXTURE_VERSION-1.aarch64.rpm")
+    fi
+    if [ "$index" -ge 4 ]; then
+        args+=("$REPO/output/spdiag-static-$RPM_FIXTURE_VERSION-1.aarch64.rpm")
+    fi
+    printf '%s\0' "${args[@]}" > "$TEST_DIR/expected-install-args"
+    cmp "$INSTALL_ARGS_LOG" "$TEST_DIR/expected-install-args" || fail 'printed command selected the wrong RPMs'
+done
 [ -f "$REPO/build/keep" ] || fail 'local build directory was cleaned'
 grep -Fxq -- "_topdir $RPM_TOPDIR" "$RPM_ARGS_LOG" || fail 'RPM_TOPDIR was not passed intact'
 tar -tzf "$RPM_TOPDIR/SOURCES/spdiag-$VERSION.tar.gz" > "$TEST_DIR/archive-files"
@@ -108,6 +143,7 @@ for option in -p -s -m -o -k; do
     expect_error "expects 'on' or 'off'" "$option" invalid
 done
 expect_error 'unknown argument' --unknown
+RPMBUILD_MISSING_STATIC=1 expect_error 'missing spdiag, spdiag-devel or spdiag-static RPM'
 if RPMBUILD_FAIL=42 bash "$REPO/build.sh" > "$TEST_DIR/result" 2>&1; then
     fail 'rpmbuild failure was ignored'
 else
@@ -119,6 +155,6 @@ fi
 printf '\n# dirty fixture\n' >> "$REPO/build.sh"
 expect_error 'uncommitted changes'
 
-[ "$(wc -l < "$RPM_CALLS_LOG")" -eq 4 ] || fail 'argument errors/help invoked rpmbuild'
+[ "$(wc -l < "$RPM_CALLS_LOG")" -eq 5 ] || fail 'argument errors/help invoked rpmbuild'
 [ ! -e "$FORBIDDEN_LOG" ] || fail 'invoked host build/install commands'
-echo 'PASS: RPM-only build entry point, alias, options, archive and failure checks'
+echo 'PASS: RPM-only build, printed install/reinstall commands, archive and failure checks'
