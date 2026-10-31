@@ -33,6 +33,8 @@ public:
 
     // Shutdown / 重 init：count_ 置 0（Acquire 返回 nullptr），数组本身不释放（避免悬挂）。
     void Reset();
+    // 丢弃尚未 dump 的进程内增量；不改变已缓存累加器地址和 level。
+    void ClearPending();
 
     // flyweight：同 key 返回同一累加器；越界或未初始化返回 nullptr。
     GlobalAccum* Acquire(uint32_t globalSlot, PerfLevel level);

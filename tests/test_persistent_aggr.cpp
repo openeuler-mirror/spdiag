@@ -41,11 +41,13 @@ SpDiag::AggregatedStat MakeStat(
     uint64_t badCount = 0,
     uint64_t notCount = 0,
     uint64_t minNs = 0,
-    uint64_t maxNs = 0) {
+    uint64_t maxNs = 0,
+    const std::string& program = "program") {
     SpDiag::AggregatedStat s;
     s.globalSlotIndex = slotIdx;
     s.moduleName = mod;
     s.pointName = pt;
+    s.programName = program;
     s.totalGoodCount = goodCount;
     s.totalBadCount = badCount;
     s.totalNotCount = notCount;
@@ -151,4 +153,29 @@ TEST_F(PersistentAggrTest, NewSlotIndex) {
     }
     EXPECT_TRUE(found1);
     EXPECT_TRUE(found2);
+}
+
+TEST_F(PersistentAggrTest, RegistrationOrderChangeUsesLogicalIdentity) {
+    SpDiag::PersistentAggr pa(testDir_);
+    auto a = MakeStat(1, "mod", "A", 100, 1000, 100, 0, 0, 1, 10,
+                      "same-program");
+    auto b = MakeStat(2, "mod", "B", 1000, 10000, 1000, 0, 0, 1, 20,
+                      "same-program");
+    pa.Update({a, b});
+
+    auto bMoved = MakeStat(1, "mod", "B", 1100, 11000, 1100, 0, 0, 1, 21,
+                           "same-program");
+    auto aMoved = MakeStat(2, "mod", "A", 150, 1500, 150, 0, 0, 1, 11,
+                           "same-program");
+    const auto delta = pa.Update({bMoved, aMoved});
+
+    ASSERT_EQ(delta.size(), 2u);
+    for (const auto& stat : delta) {
+        if (stat.pointName == "A") {
+            EXPECT_EQ(stat.totalTickCount, 50u);
+        }
+        if (stat.pointName == "B") {
+            EXPECT_EQ(stat.totalTickCount, 100u);
+        }
+    }
 }

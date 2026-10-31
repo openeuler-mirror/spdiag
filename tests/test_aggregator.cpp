@@ -39,7 +39,6 @@ void InitSingleProgramCtx(TestCtx& ctx) {
     std::strncpy(ctx.keyModuleNames[1], "TestMod", SpDiag::nameLen - 1);
     ctx.shards.resize(1 * TEST_NUM_CORES, TEST_MAX_SLOTS);
 }
-
 void SetShardStat(SpDiag::ShardBuffer& shards, size_t programIdx, size_t coreIdx,
                   uint32_t, uint32_t localSlot, uint32_t good, uint32_t bad,
                   uint32_t notCount, uint32_t ticks, uint64_t totalNs,

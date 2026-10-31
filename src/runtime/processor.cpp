@@ -13,18 +13,21 @@
 #include "processor.h"
 
 #include "sdk/platform.h"
+#include "sdk/registry_file_guard.h"
 #include "sdk/shm_probe.h"
 #include "sdk/shm_writer.h"
 #include "spdiag/shm_layout.h"
 #include <chrono>
 #include <thread>
+#include <vector>
 
 namespace SpDiag {
 
 namespace {
 bool AcquireDumpWindow(ShmHeader* header) {
     const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(500);
+        std::chrono::milliseconds(DumpWindowTimeoutMs(
+            header->perCoreTopNCapacity, header->registeredPrograms));
     while (true) {
         uint64_t expected = header->dumpSeqNo.load(std::memory_order_acquire);
         if ((expected & 1U) == 0 && header->dumpSeqNo.compare_exchange_weak(
@@ -33,6 +36,7 @@ bool AcquireDumpWindow(ShmHeader* header) {
         std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
 }
+
 }
 
 ProbeHandle SpDiagProcessor::RegisterProbe(const ProbeDesc& probeDesc) {
@@ -87,20 +91,66 @@ bool SpDiagProcessor::ClearSharedMemory(const std::string& shmName) {
     }
 
     ShmHeader* hdr = writer.Header();
+    int lockError = 0;
+    auto registryGuard = RegistryFileGuard::AcquireFor(
+        writer.Fd(), std::chrono::seconds(10), &lockError);
+    if (!registryGuard) return false;
+    auto* registry = reinterpret_cast<ProgramEntry*>(
+        reinterpret_cast<uint8_t*>(hdr) + hdr->registryOffset);
+    std::vector<ProgramTarget> targets;
+    for (uint32_t i = 0; i < hdr->registeredPrograms; ++i) {
+        const int32_t pid = __atomic_load_n(&registry[i].pid,
+                                             __ATOMIC_ACQUIRE);
+        if (registry[i].active && pid > 0 &&
+            Platform::ProcessInstanceIsAlive(
+                pid, registry[i].processStartTimeTicks)) {
+            targets.push_back(
+                {i, pid, registry[i].processStartTimeTicks});
+        }
+    }
     if (!AcquireDumpWindow(hdr)) return false;
-    __atomic_add_fetch(&hdr->generation, 1, __ATOMIC_RELEASE);
-    std::atomic_thread_fence(std::memory_order_release);
+    const uint64_t request = __atomic_add_fetch(
+        &hdr->generation, 1U, __ATOMIC_ACQ_REL);
 
+    // The generation change is the clear linearization point.  Reset the
+    // published data while the writer window is held, then release the window
+    // before waiting: producers need that same window to finish a dump that
+    // began before this request and observe the new generation.
     for (uint32_t i = 0; i < hdr->numCores; ++i) {
         void* shardPtr = writer.ShardPtr(0, i);
         PerfStat* stats = ShmShardStats(shardPtr);
-        for (uint32_t j = 0; j < hdr->maxSlots; ++j) {
-            stats[j].reset();
-        }
+        for (uint32_t j = 0; j < hdr->maxSlots; ++j) stats[j].reset();
+    }
+    if (GlobalPerfStat* global = writer.GlobalAccumPtr()) {
+        for (uint32_t i = 0; i < hdr->globalAccumCount; ++i)
+            global[i].stat.reset();
     }
     std::atomic_thread_fence(std::memory_order_release);
-    hdr->dumpSeqNo.fetch_add(1, std::memory_order_relaxed);
-    writer.WriteHeader(*hdr);
+    hdr->dumpSeqNo.fetch_add(1, std::memory_order_release);
+    registryGuard.reset();
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(10);
+    while (true) {
+        bool complete = true;
+        for (const ProgramTarget& target : targets) {
+            const ProgramEntry& entry = registry[target.index];
+            if (__atomic_load_n(&entry.pid, __ATOMIC_ACQUIRE) != target.pid ||
+                entry.processStartTimeTicks != target.processStartTimeTicks ||
+                !Platform::ProcessInstanceIsAlive(
+                    target.pid, target.processStartTimeTicks)) continue;
+            if (__atomic_load_n(&entry.clearAckGeneration,
+                                __ATOMIC_ACQUIRE) < request) {
+                complete = false;
+                break;
+            }
+        }
+        if (complete) break;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     return true;
 }
 

@@ -41,9 +41,12 @@ PerfTimer::PerfTimer(ShmWriter& writer, PerfShardManager& shardManager, uint32_t
     , programIndex_(programIndex)
 {
     if (const ShmHeader* header = writer_.Header()) {
-        generation_ = __atomic_load_n(&header->generation, __ATOMIC_ACQUIRE);
         observedDumpRequest_ = header->dumpRequestGeneration.load(
             std::memory_order_acquire);
+        // ConnectAndRegister aligns the local shard state before constructing
+        // the timer.  Starting from that local generation ensures a clear
+        // published immediately afterwards is still observed and ACKed.
+        generation_ = shardManager_.GetClearGeneration();
     }
 }
 
@@ -97,6 +100,10 @@ void PerfTimer::DumpLoop() {
             }
             ShmHeader* header = writer_.Header();
             if (header == nullptr) continue;
+            if (ClearRequested(header)) {
+                AcknowledgeClear(generation_);
+                continue;
+            }
             const uint64_t request = header->dumpRequestGeneration.load(
                 std::memory_order_acquire);
             const auto now = std::chrono::steady_clock::now();
@@ -116,8 +123,10 @@ void PerfTimer::DumpLoop() {
         }
     } catch (const std::exception& e) {
         SPDIAG_LOG_ERROR(LogModule::SDK, "PerfTimer DumpLoop exception: %s", e.what());
+        WithdrawRegistration();
     } catch (...) {
         SPDIAG_LOG_ERROR(LogModule::SDK, "PerfTimer DumpLoop unknown exception");
+        WithdrawRegistration();
     }
 }
 
@@ -127,6 +136,7 @@ bool PerfTimer::DoOneDump() {
         return false;
     }
     if (ClearRequested(hdr)) {
+        AcknowledgeClear(generation_);
         return false;
     }
 
@@ -180,12 +190,16 @@ bool PerfTimer::DoOneDump() {
     // Atomic loads happen before the shared-memory writer window. The
     // cumulative heap is never cleared, so a concurrent update that lands
     // after this copy is naturally visible in the next dump.
+    bool topNStable = true;
     for (uint32_t core = 0; core < numCores; ++core) {
-        shardManager_.SnapshotTopN(
+        topNStable = shardManager_.SnapshotTopN(
             snapshotTopN_.get() + static_cast<size_t>(core) * perCoreValues,
             snapshotTopNCounts_.get() +
                 static_cast<size_t>(core) * slotCount_,
-            srcShards[core]);
+            srcShards[core]) && topNStable;
+    }
+    if (!topNStable) {
+        return false;
     }
 #endif
 
@@ -216,6 +230,7 @@ bool PerfTimer::DoOneDump() {
     }
 
     if (ClearRequested(hdr)) {
+        AcknowledgeClear(generation_);
         hdr->dumpSeqNo.fetch_add(1, std::memory_order_release);
         return false;
     }
@@ -262,14 +277,32 @@ void PerfTimer::Acknowledge(uint64_t requestGeneration) {
                      requestGeneration, __ATOMIC_RELEASE);
 }
 
+void PerfTimer::AcknowledgeClear(uint64_t requestGeneration) {
+    ShmHeader* header = writer_.Header();
+    if (header == nullptr || programIndex_ >= header->registeredPrograms) return;
+    auto* registry = reinterpret_cast<ProgramEntry*>(
+        reinterpret_cast<uint8_t*>(header) + header->registryOffset);
+    __atomic_store_n(&registry[programIndex_].clearAckGeneration,
+                     requestGeneration, __ATOMIC_RELEASE);
+}
+
+void PerfTimer::WithdrawRegistration() {
+    ShmHeader* header = writer_.Header();
+    if (header == nullptr || programIndex_ >= header->registeredPrograms) return;
+    auto* registry = reinterpret_cast<ProgramEntry*>(
+        reinterpret_cast<uint8_t*>(header) + header->registryOffset);
+    __atomic_store_n(&registry[programIndex_].pid, 0, __ATOMIC_RELEASE);
+}
+
 bool PerfTimer::ClearRequested(ShmHeader* header) {
-    const uint32_t generation =
+    const uint32_t request =
         __atomic_load_n(&header->generation, __ATOMIC_ACQUIRE);
-    if (generation == generation_) {
+    if (request == generation_) {
         return false;
     }
-    shardManager_.Clear();
-    generation_ = generation;
+    GlobalPerfPointFactory::Instance().ClearPending();
+    shardManager_.SetClearGeneration(request);
+    generation_ = request;
     return true;
 }
 
@@ -288,14 +321,22 @@ void PerfTimer::SnapshotAndMergeGlobal() {
 
     for (uint32_t g = 0; g < n; ++g) {
         GlobalAccum& a = accums[g];
-        // 原子「偷取并清零」：exchange 拿走本轮增量；并发的 End fetch_add 落到下一轮。
+        const uint64_t tick = LockGlobalAccum(a);
+        // 独占窗口内拿走本轮完整增量；后续 End 落到下一轮。
         uint64_t good = a.goodCount.exchange(0, RLX);
         uint64_t bad  = a.badCount.exchange(0, RLX);
         uint64_t notc = a.notCount.exchange(0, RLX);
-        uint64_t tick = a.tickCount.exchange(0, RLX);
         uint64_t time = a.totalTimeNs.exchange(0, RLX);
         uint64_t tmin = a.minTimeNs.exchange(0, RLX);
         uint64_t tmax = a.maxTimeNs.exchange(0, RLX);
+        uint32_t level = a.level.load(RLX);
+#ifdef SPDIAG_ENABLE_PERCENTILE
+        uint64_t pendingTopN[maxTopN];
+        uint32_t limit = std::min<uint32_t>(a.topNCount.exchange(0, RLX),
+                                            maxTopN);
+        std::copy_n(a.topN, limit, pendingTopN);
+#endif
+        UnlockGlobalAccum(a);
         if (tick == 0 && notc == 0) {
             continue;
         }
@@ -313,16 +354,12 @@ void PerfTimer::SnapshotAndMergeGlobal() {
         if (tmax > dst.maxTimeNs) {
             dst.maxTimeNs = tmax;
         }
-        dst.level = static_cast<uint8_t>(a.level.load(RLX));
+        dst.level = static_cast<uint8_t>(level);
 #ifdef SPDIAG_ENABLE_PERCENTILE
         // 转录全局 topN 到 SHM PerfStat
-        uint32_t tn = a.topNCount.exchange(0, RLX);
-        if (tn > 0) {
-            uint32_t limit = (tn < maxTopN) ? tn : maxTopN;
-            for (uint32_t k = 0; k < limit; ++k) {
-                InsertTopN({shmGlobal[g].topN, &dst.topNCount, maxTopN},
-                           a.topN[k]);
-            }
+        for (uint32_t k = 0; k < limit; ++k) {
+            InsertTopN({shmGlobal[g].topN, &dst.topNCount, maxTopN},
+                       pendingTopN[k]);
         }
 #endif
     }

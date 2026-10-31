@@ -29,6 +29,30 @@ void Aggregator::Aggregate(
     std::map<uint32_t, AggregatedStat> statMap;
     const size_t coreCount = std::min(static_cast<size_t>(numCores), srcShards.size());
     const uint32_t maxSlots = srcShards.maxSlots();
+    std::vector<uint32_t> canonicalSlot(maxSlots);
+    std::vector<std::vector<uint32_t>> memberSlots(maxSlots);
+    std::vector<std::string> programNames(maxSlots);
+    std::map<std::string, uint32_t> logicalSlots;
+    for (uint32_t slot = 0; slot < maxSlots; ++slot) canonicalSlot[slot] = slot;
+    for (uint32_t p = 0; p < numPrograms; ++p) {
+        if (!programs[p].active || programs[p].baseSlot >= maxSlots) continue;
+        const uint32_t end = programs[p].baseSlot + std::min(
+            programs[p].slotCount, maxSlots - programs[p].baseSlot);
+        for (uint32_t slot = programs[p].baseSlot; slot < end; ++slot) {
+            std::string key(programs[p].name);
+            key.push_back('\x1f');
+            key += keyModuleNames[slot];
+            key.push_back('\x1f');
+            key += keyPointNames[slot];
+            if (keyModuleNames[slot][0] == '\0' && keyPointNames[slot][0] == '\0')
+                key += std::to_string(slot - programs[p].baseSlot);
+            auto [it, inserted] = logicalSlots.emplace(key, slot);
+            const uint32_t canonical = it->second;
+            canonicalSlot[slot] = canonical;
+            memberSlots[canonical].push_back(slot);
+            if (inserted) programNames[canonical] = programs[p].name;
+        }
+    }
 #ifdef SPDIAG_ENABLE_PERCENTILE
     std::vector<uint64_t> percentileCandidates;
     size_t perCoreCandidates = 0;
@@ -55,8 +79,9 @@ void Aggregator::Aggregate(
 
                 uint32_t slotIdx = stat.slotIndex;
                 if (slotIdx >= maxSlots) continue;
-                auto& entry = statMap[slotIdx];
-                entry.globalSlotIndex = slotIdx;
+                const uint32_t canonical = canonicalSlot[slotIdx];
+                auto& entry = statMap[canonical];
+                entry.globalSlotIndex = canonical;
 
                 entry.totalGoodCount += stat.backGoodCount;
                 entry.totalBadCount += stat.backBadCount;
@@ -89,8 +114,9 @@ void Aggregator::Aggregate(
             if (stat.tickCount == 0) {
                 continue;
             }
-            auto& entry = statMap[gi];
-            entry.globalSlotIndex = gi;
+            const uint32_t canonical = canonicalSlot[gi];
+            auto& entry = statMap[canonical];
+            entry.globalSlotIndex = canonical;
 
             entry.totalGoodCount += stat.backGoodCount;
             entry.totalBadCount += stat.backBadCount;
@@ -122,46 +148,48 @@ void Aggregator::Aggregate(
         percentileCandidates.clear();
         uint64_t truncationFloor = 0;
         bool coverageUnknown = false;
-        for (size_t core = 0; core < coreCount; ++core) {
-            const PerfStat& stat = srcShards.stats(core)[slotIdx];
-            if (stat.tickCount == 0 || stat.slotIndex != slotIdx) {
-                continue;
-            }
-            const auto topN = srcShards.topN(core, slotIdx);
-            uint64_t sourceFloor = std::numeric_limits<uint64_t>::max();
-            for (uint32_t t = 0; t < topN.count; ++t) {
-                if (topN.values[t] > 0) {
-                    percentileCandidates.push_back(topN.values[t]);
-                    sourceFloor = std::min(sourceFloor, topN.values[t]);
+        const auto collectSlot = [&](uint32_t sourceSlot) {
+            for (size_t core = 0; core < coreCount; ++core) {
+                const PerfStat& stat = srcShards.stats(core)[sourceSlot];
+                if (stat.tickCount == 0 || stat.slotIndex != sourceSlot) continue;
+                const auto topN = srcShards.topN(core, sourceSlot);
+                uint64_t sourceFloor = std::numeric_limits<uint64_t>::max();
+                for (uint32_t t = 0; t < topN.count; ++t) {
+                    if (topN.values[t] > 0) {
+                        percentileCandidates.push_back(topN.values[t]);
+                        sourceFloor = std::min(sourceFloor, topN.values[t]);
+                    }
+                }
+                if (stat.tickCount > topN.count) {
+                    if (sourceFloor == std::numeric_limits<uint64_t>::max())
+                        coverageUnknown = true;
+                    else
+                        truncationFloor = std::max(truncationFloor, sourceFloor);
                 }
             }
-            if (stat.tickCount > topN.count) {
-                if (sourceFloor == std::numeric_limits<uint64_t>::max()) {
-                    coverageUnknown = true;
-                } else {
-                    truncationFloor = std::max(truncationFloor, sourceFloor);
+            if (sourceSlot < boundedGlobalCount) {
+                const PerfStat& stat = globalStats[sourceSlot].stat;
+                const uint32_t count = std::min<uint32_t>(stat.topNCount, maxTopN);
+                uint64_t sourceFloor = std::numeric_limits<uint64_t>::max();
+                for (uint32_t t = 0; t < count; ++t) {
+                    if (globalStats[sourceSlot].topN[t] > 0) {
+                        percentileCandidates.push_back(globalStats[sourceSlot].topN[t]);
+                        sourceFloor = std::min(sourceFloor,
+                                               globalStats[sourceSlot].topN[t]);
+                    }
+                }
+                if (stat.tickCount > count) {
+                    if (sourceFloor == std::numeric_limits<uint64_t>::max())
+                        coverageUnknown = true;
+                    else
+                        truncationFloor = std::max(truncationFloor, sourceFloor);
                 }
             }
-        }
-        if (slotIdx < boundedGlobalCount) {
-            const PerfStat& stat = globalStats[slotIdx].stat;
-            const uint32_t count = std::min<uint32_t>(stat.topNCount, maxTopN);
-            uint64_t sourceFloor = std::numeric_limits<uint64_t>::max();
-            for (uint32_t t = 0; t < count; ++t) {
-                if (globalStats[slotIdx].topN[t] > 0) {
-                    percentileCandidates.push_back(
-                        globalStats[slotIdx].topN[t]);
-                    sourceFloor = std::min(
-                        sourceFloor, globalStats[slotIdx].topN[t]);
-                }
-            }
-            if (stat.tickCount > count) {
-                if (sourceFloor == std::numeric_limits<uint64_t>::max()) {
-                    coverageUnknown = true;
-                } else {
-                    truncationFloor = std::max(truncationFloor, sourceFloor);
-                }
-            }
+        };
+        if (memberSlots[slotIdx].empty()) {
+            collectSlot(slotIdx);
+        } else {
+            for (uint32_t sourceSlot : memberSlots[slotIdx]) collectSlot(sourceSlot);
         }
         CalculatePercentilesUnsorted(percentileCandidates,
             entry.totalTickCount,
@@ -171,13 +199,7 @@ void Aggregator::Aggregate(
             truncationFloor, coverageUnknown);
 #endif
 
-        for (uint32_t p = 0; p < numPrograms; ++p) {
-            if (slotIdx >= programs[p].baseSlot &&
-                slotIdx - programs[p].baseSlot < programs[p].slotCount) {
-                entry.programName = programs[p].name;
-                break;
-            }
-        }
+        entry.programName = programNames[slotIdx];
 
         entry.moduleName = keyModuleNames[slotIdx];
         entry.pointName = keyPointNames[slotIdx];

@@ -174,12 +174,22 @@ TEST(PerfShardTest, PerCoreTopNConcurrentSnapshotConverges) {
     std::vector<uint64_t> snapshotTopN(2u * capacity);
     std::vector<uint16_t> counts(2);
     while (!done.load(std::memory_order_acquire)) {
-        mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard);
-        EXPECT_LE(counts[1], capacity);
+        if (mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard)) {
+            EXPECT_LE(counts[1], capacity);
+            std::vector<uint64_t> stable(
+                snapshotTopN.begin() + capacity,
+                snapshotTopN.begin() + capacity + counts[1]);
+            for (size_t i = 1; i < stable.size(); ++i) {
+                EXPECT_LE(stable[(i - 1) / 2], stable[i]);
+            }
+            std::sort(stable.begin(), stable.end());
+            EXPECT_EQ(std::adjacent_find(stable.begin(), stable.end()),
+                      stable.end());
+        }
         ++snapshots;
     }
     producer.join();
-    mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard);
+    ASSERT_TRUE(mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard));
     EXPECT_GT(snapshots, 0u);
     ASSERT_EQ(counts[1], capacity);
     std::sort(snapshotTopN.begin() + capacity, snapshotTopN.end());

@@ -22,6 +22,19 @@ static constexpr uint32_t AGGR_MAGIC = 0x41474752;
 static constexpr uint32_t SNAPSHOT_MAGIC = 0x534E5053;
 static constexpr uint32_t FILE_VERSION = 1;
 
+static bool SamePersistentIdentity(const AggregatedStat& lhs,
+                                   const AggregatedStat& rhs) {
+    const bool complete = !lhs.programName.empty() && !rhs.programName.empty() &&
+        !lhs.moduleName.empty() && !rhs.moduleName.empty() &&
+        !lhs.pointName.empty() && !rhs.pointName.empty();
+    if (complete) {
+        return lhs.programName == rhs.programName &&
+               lhs.moduleName == rhs.moduleName &&
+               lhs.pointName == rhs.pointName;
+    }
+    return lhs.globalSlotIndex == rhs.globalSlotIndex;
+}
+
 PersistentAggr::PersistentAggr(const std::string& dataDir)
     : dataDir_(dataDir)
     , aggrFilePath_(dataDir + "/aggr.bin")
@@ -223,13 +236,7 @@ std::vector<AggregatedStat> PersistentAggr::Update(const std::vector<AggregatedS
     for (const auto& d : delta) {
         AggregatedStat* match = nullptr;
         for (auto& existing : accumulated) {
-            if (existing.globalSlotIndex == d.globalSlotIndex) {
-                match = &existing;
-                break;
-            }
-            if (!d.moduleName.empty() && !d.pointName.empty()
-                && existing.moduleName == d.moduleName
-                && existing.pointName == d.pointName) {
+            if (SamePersistentIdentity(existing, d)) {
                 match = &existing;
                 break;
             }
@@ -277,13 +284,7 @@ std::vector<AggregatedStat> PersistentAggr::ComputeDelta(
 
         const AggregatedStat* prevMatch = nullptr;
         for (const auto& prev : previous) {
-            if (prev.globalSlotIndex == cur.globalSlotIndex) {
-                prevMatch = &prev;
-                break;
-            }
-            if (!cur.moduleName.empty() && !cur.pointName.empty()
-                && prev.moduleName == cur.moduleName
-                && prev.pointName == cur.pointName) {
+            if (SamePersistentIdentity(prev, cur)) {
                 prevMatch = &prev;
                 break;
             }

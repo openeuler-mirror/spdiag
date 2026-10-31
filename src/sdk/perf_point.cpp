@@ -144,6 +144,7 @@ void PerfPoint::End(int returnCode) {
         if (gaccum_ == nullptr) {
             return;
         }
+        BeginGlobalAccumUpdate(*gaccum_);
         uint64_t endTs = NowNs();
         // acquire：与 Start 的 release 配对，必读到 Start 线程写的时间戳。
         uint64_t elapsed = endTs - startTsGlobal_.load(std::memory_order_acquire);
@@ -157,10 +158,10 @@ void PerfPoint::End(int returnCode) {
         gaccum_->totalTimeNs.fetch_add(elapsed, RLX);
         UpdateAtomicMin(gaccum_->minTimeNs, elapsed);
         UpdateAtomicMax(gaccum_->maxTimeNs, elapsed);
-        gaccum_->tickCount.fetch_add(1, RLX);
 #ifdef SPDIAG_ENABLE_PERCENTILE
         UpdateTopNAtomic(*gaccum_, elapsed);
 #endif
+        gaccum_->tickCount.fetch_add(1, std::memory_order_acq_rel);
         ended_ = true;
         return;
     }
@@ -168,6 +169,7 @@ void PerfPoint::End(int returnCode) {
     uint64_t elapsed = endTs - startTs_;
     PerfManager& mgr = PerfManager::Instance();
     auto& shard = mgr.GetShard();
+    mgr.FastGetShardManager().PrepareForSample(shard);
     stat_ = &shard.stats[slotIndex_];
     stat_->slotIndex = mgr.FastResolveSlot(slotIndex_);
     stat_->level = static_cast<uint8_t>(level_);
@@ -192,7 +194,7 @@ void PerfPoint::End(int returnCode) {
     stat_->tickCount++;
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-    mgr.GetShardManager().InsertTopNValue(shard, slotIndex_, elapsed);
+    mgr.FastGetShardManager().InsertTopNValue(shard, slotIndex_, elapsed);
 #endif
 #ifdef SPDIAG_ENABLE_PERFLOG
     if (mgr.IsPerfLogEnabled()) {
@@ -211,13 +213,16 @@ void PerfPoint::Abandon() {
     }
     if (global_) {
         if (gaccum_ != nullptr) {
+            BeginGlobalAccumUpdate(*gaccum_);
             gaccum_->notCount.fetch_add(1, RLX);
-            gaccum_->tickCount.fetch_add(1, RLX);
+            gaccum_->tickCount.fetch_add(1, std::memory_order_acq_rel);
         }
         return;
     }
     PerfManager& mgr = PerfManager::Instance();
-    stat_ = &mgr.GetShard().stats[slotIndex_];
+    auto& shard = mgr.GetShard();
+    mgr.FastGetShardManager().PrepareForSample(shard);
+    stat_ = &shard.stats[slotIndex_];
     stat_->slotIndex = mgr.FastResolveSlot(slotIndex_);
     stat_->level = static_cast<uint8_t>(level_);
 

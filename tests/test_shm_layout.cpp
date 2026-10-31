@@ -32,7 +32,7 @@ TEST(ShmLayoutTest, Constants) {
     EXPECT_EQ(SpDiag::nameLen, 64u);
     EXPECT_EQ(SpDiag::defaultPerCoreTopN, 100u);
     EXPECT_EQ(SpDiag::maxPerCoreTopN, 10000u);
-    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 3u);
+    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 5u);
 }
 
 TEST(ShmLayoutTest, FeatureMaskMatchesCompileTimeLayout) {

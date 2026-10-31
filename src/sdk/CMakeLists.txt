@@ -22,8 +22,8 @@ set_target_properties(spdiag_lib PROPERTIES OUTPUT_NAME spdiag)
 if(SPDIAG_BUILD_SHARED)
     set_target_properties(spdiag_lib PROPERTIES
         EXPORT_NAME spdiag_lib
-        VERSION ${PROJECT_VERSION}
-        SOVERSION ${PROJECT_VERSION_MAJOR}
+        VERSION ${SPDIAG_ABI_VERSION}.0.0
+        SOVERSION ${SPDIAG_ABI_VERSION}
     )
 else()
     # Keep the build-tree target name stable while exporting a distinct

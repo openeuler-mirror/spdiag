@@ -20,6 +20,8 @@
 #include "global_perf_point_factory.h"
 #include "registry_file_guard.h"
 #include <cstddef>
+#include <cerrno>
+#include <csignal>
 #include <chrono>
 #include <thread>
 #include <cstring>
@@ -91,6 +93,7 @@ void PerfManager::Init(const PerfConfig& config) {
     shmName_ = config.shmName;
     mode_ = config.mode;
     programName_ = config.programName;
+    processStartTimeTicks_ = Platform::GetProcessStartTimeTicks(getpid());
 
     if (config.levelGate == 0) {
         levelGate_ = (mode_ == RunMode::RELEASE) ? 1 : 2;
@@ -181,7 +184,6 @@ bool PerfManager::ConnectToExistingShm(uint32_t dumpIntervalHint) {
     numCores_ = existingHdr->numCores;
     levelGate_ = existingHdr->levelGate;
     mode_ = static_cast<RunMode>(existingHdr->mode);
-    generation_ = existingHdr->generation;
 #ifdef SPDIAG_ENABLE_PERFLOG
     perflogEnabled_.store(existingHdr->perflogEnabled != 0, std::memory_order_relaxed);
 #endif
@@ -194,6 +196,8 @@ bool PerfManager::ConnectToExistingShm(uint32_t dumpIntervalHint) {
         shmWriter_.reset();
         return false;
     }
+    shardManager_.SetClearGeneration(
+        __atomic_load_n(&existingHdr->generation, __ATOMIC_ACQUIRE));
 
     if (programName_.empty()) {
         const char* autoName = detail::AutoProgramName();
@@ -239,6 +243,8 @@ void PerfManager::Shutdown() {
             timer_.reset();
         }
 
+        WithdrawRegistration();
+
         if (shmWriter_) {
             shmWriter_->Destroy();
             shmWriter_.reset();
@@ -251,6 +257,24 @@ void PerfManager::Shutdown() {
         // 被旧 true 拦住，错过重新探测。
         probeDone_.store(false, std::memory_order_release);
         initialized_.store(false, std::memory_order_release);
+    }
+}
+
+void PerfManager::WithdrawRegistration() {
+    if (!shmWriter_ || shmWriter_->Header() == nullptr) return;
+    int lockError = 0;
+    auto guard = RegistryFileGuard::AcquireFor(
+        shmWriter_->Fd(), registryLockTimeout, &lockError);
+    if (!guard) return;
+    ShmHeader* header = shmWriter_->Header();
+    if (programIndex_ >= header->registeredPrograms) return;
+    auto* registry = reinterpret_cast<ProgramEntry*>(
+        reinterpret_cast<uint8_t*>(header) + header->registryOffset);
+    ProgramEntry& entry = registry[programIndex_];
+    if (__atomic_load_n(&entry.pid, __ATOMIC_ACQUIRE) ==
+            static_cast<int32_t>(getpid()) &&
+        entry.processStartTimeTicks == processStartTimeTicks_) {
+        __atomic_store_n(&entry.pid, 0, __ATOMIC_RELEASE);
     }
 }
 
@@ -335,6 +359,9 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
 
     uint32_t baseSlot = 0;
     int32_t pid = static_cast<int32_t>(getpid());
+    const uint64_t processStart = processStartTimeTicks_ != 0
+        ? processStartTimeTicks_ : Platform::GetProcessStartTimeTicks(pid);
+    processStartTimeTicks_ = processStart;
 
     bool reused = false;
 
@@ -344,11 +371,22 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
     const char** autoModuleNames = detail::AutoModuleNames();
 
     for (uint32_t i = 0; i < hdr->registeredPrograms; ++i) {
-        if (registry[i].active && std::strncmp(registry[i].name, params.programName, 63) == 0) {
+        const bool sameName = registry[i].active &&
+            std::strncmp(registry[i].name, params.programName, 63) == 0;
+        const int32_t registeredPid =
+            __atomic_load_n(&registry[i].pid, __ATOMIC_ACQUIRE);
+        const bool sameInstance = registeredPid == pid &&
+            registry[i].processStartTimeTicks == processStart;
+        if (sameName && (sameInstance ||
+                         registeredPid <= 0 ||
+                         !Platform::ProcessInstanceIsAlive(
+                              registeredPid,
+                             registry[i].processStartTimeTicks))) {
             baseSlot = registry[i].baseSlot;
             programIndex_ = i;
             reused = true;
-            registry[i].pid = pid;
+            registry[i].processStartTimeTicks = processStart;
+            __atomic_store_n(&registry[i].pid, pid, __ATOMIC_RELEASE);
 
             // 对比名称，找出变化的 slot 并清零其 PerfStat
             uint32_t compareCount = (slotCount_ <= registry[i].slotCount) ? slotCount_ : registry[i].slotCount;
@@ -387,6 +425,14 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
     }
 
     if (!reused) {
+        if (hdr->registeredPrograms >= hdr->maxPrograms) {
+            SPDIAG_LOG_ERROR(LogModule::SDK,
+                             "program registry is full: maxPrograms=%u",
+                             hdr->maxPrograms);
+            registryGuard.reset();
+            shmWriter_.reset();
+            return false;
+        }
         for (uint32_t i = 0; i < hdr->registeredPrograms; ++i) {
             if (registry[i].active) {
                 baseSlot += registry[i].slotCount;
@@ -394,6 +440,9 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         }
 
         if (baseSlot + slotCount_ > hdr->maxSlots) {
+            SPDIAG_LOG_ERROR(LogModule::SDK,
+                             "performance slots exhausted: required=%u maxSlots=%u",
+                             baseSlot + slotCount_, hdr->maxSlots);
             registryGuard.reset();
             shmWriter_.reset();
             return false;
@@ -408,8 +457,9 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         entry.slotCount = slotCount_;
         entry.numCores = numCores_;
         entry.shardOffset = 0;
-        entry.pid = pid;
         entry.active = 1;
+        entry.processStartTimeTicks = processStart;
+        __atomic_store_n(&entry.pid, pid, __ATOMIC_RELEASE);
 
         for (uint32_t i = 1; i < slotCount_; ++i) {
             ResolveAndWriteSlotName(keyNames, keyModuleNames, baseSlot + i, i - 1, autoPointNames, autoModuleNames);
@@ -422,7 +472,6 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
     __atomic_store_n(&registered->dumpAckGeneration,
         hdr->dumpRequestGeneration.load(std::memory_order_acquire),
         __ATOMIC_RELEASE);
-    registryGuard.reset();
 
     baseOffset_ = baseSlot;
 
@@ -447,6 +496,16 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
         }
     }
 #endif
+
+    // Registration, cumulative-heap restore, and clear acknowledgement share
+    // the registry lock.  Therefore clear can only target this process after
+    // its local state has been aligned with the acknowledged generation.
+    const uint32_t clearGeneration =
+        __atomic_load_n(&hdr->generation, __ATOMIC_ACQUIRE);
+    shardManager_.SetClearGeneration(clearGeneration);
+    __atomic_store_n(&registered->clearAckGeneration, clearGeneration,
+                     __ATOMIC_RELEASE);
+    registryGuard.reset();
 
     Platform::CalibrateTimestamp();
 
@@ -479,6 +538,10 @@ bool PerfManager::IsPerfLogEnabled() const {
 
 LocalPerfShard& PerfManager::GetShard() {
     return shardManager_.GetShard();
+}
+
+PerfShardManager& PerfManager::GetShardManager() {
+    return shardManager_;
 }
 
 RunMode PerfManager::Mode() const {
