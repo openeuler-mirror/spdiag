@@ -48,10 +48,23 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 
 namespace SpDiag {
 
 namespace {
+
+bool ProcessIsAlive(int32_t pid) {
+    if (pid <= 0) return false;
+    if (::kill(pid, 0) == 0) return true;
+    return errno == EPERM;
+}
+
+std::chrono::milliseconds DumpRequestTimeout(uint32_t capacity) {
+    const uint64_t timeout = std::max<uint64_t>(
+        3000, std::min<uint64_t>(60000, 2000 + 6ULL * capacity));
+    return std::chrono::milliseconds(timeout);
+}
 
 void PrintShmOperationError(const char* action, const std::string& shmName,
                             int errorCode) {
@@ -295,6 +308,7 @@ CollectResult SpDiagManager::CollectAndAggregate(const Cli::CliConfig& config) {
     const ShmHeader& hdr = reader.Header();
     result.numCores = hdr.numCores;
     result.maxSlots = hdr.maxSlots;
+    result.perCoreTopNCapacity = hdr.perCoreTopNCapacity;
 #ifdef SPDIAG_ENABLE_PERFLOG
     result.perflogEnabled = hdr.perflogEnabled;
     result.perflogBootCounter = hdr.perflogBootCounter;
@@ -375,6 +389,44 @@ CollectResult SpDiagManager::CollectAndAggregate(const Cli::CliConfig& config) {
     return result;
 }
 
+bool SpDiagManager::RequestFreshDump(const Cli::CliConfig& config) {
+    const auto probe = ProbeShmHeader(config.shmName);
+    if (!probe.valid) return false;
+    ShmWriter writer;
+    if (!writer.Open(config.shmName, probe.totalSize)) return false;
+    ShmHeader* header = writer.Header();
+    ProgramEntry* registry = reinterpret_cast<ProgramEntry*>(
+        reinterpret_cast<uint8_t*>(header) + header->registryOffset);
+    std::vector<uint32_t> targets;
+    for (uint32_t i = 0; i < header->registeredPrograms; ++i) {
+        if (registry[i].active && ProcessIsAlive(registry[i].pid)) {
+            targets.push_back(i);
+        }
+    }
+    const uint64_t request = header->dumpRequestGeneration.fetch_add(
+        1, std::memory_order_acq_rel) + 1;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          DumpRequestTimeout(header->perCoreTopNCapacity);
+    while (true) {
+        bool complete = true;
+        for (uint32_t index : targets) {
+            if (!ProcessIsAlive(registry[index].pid)) continue;
+            if (__atomic_load_n(&registry[index].dumpAckGeneration,
+                                __ATOMIC_ACQUIRE) < request) {
+                complete = false;
+                break;
+            }
+        }
+        if (complete) return true;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::cerr << "spdiag: timed out waiting for fresh dump request "
+                      << request << std::endl;
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
 std::vector<DumpRecord> SpDiagManager::QueryHistory(const Cli::CliConfig& config) {
     DumpRecorder recorder(config.historySize);
     std::string historyPath = config.dataDir + "/history.bin";
@@ -430,7 +482,8 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
     uint32_t cfgMaxSlots = (config.maxSlots > 0) ? config.maxSlots : PerfConfig().maxSlots;
     uint32_t cfgMaxPrograms = (config.maxPrograms > 0) ? config.maxPrograms : maxProgramsDefault;
     ShmLayoutDescriptor layout;
-    if (!ComputeShmLayout(cfgMaxSlots, cfgMaxPrograms, numCores, layout)) {
+    if (!ComputeShmLayout(cfgMaxSlots, cfgMaxPrograms, numCores, layout,
+                          config.perCoreTopN)) {
         SPDIAG_LOG_ERROR(LogModule::MANAGER,
                          "invalid or overflowing shared-memory layout");
         return false;
@@ -453,12 +506,14 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
     hdr.maxPrograms = cfgMaxPrograms;
     hdr.registeredPrograms = 0;
     hdr.numCores = numCores;
-    hdr.dumpIntervalMs = (config.dumpIntervalMs > 0) ? config.dumpIntervalMs : 1000;
+    hdr.perCoreTopNCapacity = config.perCoreTopN;
+    hdr.dumpIntervalMs = config.dumpIntervalMs;
     {
         static uint32_t s_gen = 0;
         hdr.generation = ++s_gen;     // 每次创建递增，SDK 可通过对比检测 SHM 重启
     }
     hdr.dumpSeqNo.store(0, std::memory_order_relaxed);
+    hdr.dumpRequestGeneration.store(0, std::memory_order_relaxed);
     hdr.lastDumpTimestampNs = 0;
     hdr.shmTotalSize = layout.totalSize;
     hdr.registryOffset = layout.registryOffset;
@@ -486,10 +541,6 @@ bool SpDiagManager::CreateShm(const Cli::CliConfig& config) {
 #endif
     hdr.spinlock.clear();
     writer.WriteHeader(hdr);
-
-    auto* base = reinterpret_cast<uint8_t*>(writer.Header());
-    std::memset(base + layout.registryOffset, 0,
-                layout.totalSize - layout.registryOffset);
 
     writer.Release();
     return true;

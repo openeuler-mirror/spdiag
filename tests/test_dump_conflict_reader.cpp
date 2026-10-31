@@ -119,9 +119,11 @@ int main(int argc, char* argv[]) {
             // 阶段 2：memcpy
             std::atomic_thread_fence(std::memory_order_acquire);
             uint32_t numShards = hdr->numCores;
-            buffer.resize(numShards, hdr->maxSlots);
+            buffer.resize(numShards, hdr->maxSlots,
+                          hdr->perCoreTopNCapacity);
 
-            size_t shardSize = ShmShardSize(hdr->maxSlots);
+            size_t shardSize = ShmShardSize(hdr->maxSlots,
+                                            hdr->perCoreTopNCapacity);
             for (uint32_t i = 0; i < numShards; ++i) {
                 const void* src = reinterpret_cast<const uint8_t*>(handle.baseAddr)
                     + hdr->shardsOffset + i * shardSize;

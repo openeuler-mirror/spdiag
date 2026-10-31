@@ -79,6 +79,31 @@ inline void CalculatePercentilesFromMinHeap(
                          p9999Ns, hasP9999);
 }
 
+inline void CalculatePercentilesUnsorted(
+    std::vector<uint64_t>& candidates, uint64_t totalTickCount,
+    uint64_t& p99Ns, bool& hasP99,
+    uint64_t& p999Ns, bool& hasP999,
+    uint64_t& p9999Ns, bool& hasP9999,
+    uint64_t truncationFloor = 0, bool coverageUnknown = false)
+{
+    p99Ns = p999Ns = p9999Ns = 0;
+    hasP99 = hasP999 = hasP9999 = false;
+    auto select = [&](double tail, uint64_t& value, bool& available) {
+        const size_t index = static_cast<size_t>(std::floor(
+            tail * totalTickCount));
+        if (coverageUnknown || totalTickCount == 0 ||
+            index >= candidates.size()) return;
+        std::nth_element(candidates.begin(), candidates.begin() + index,
+                         candidates.end(), std::greater<uint64_t>());
+        if (candidates[index] < truncationFloor) return;
+        value = candidates[index];
+        available = true;
+    };
+    select(0.01, p99Ns, hasP99);
+    select(0.001, p999Ns, hasP999);
+    select(0.0001, p9999Ns, hasP9999);
+}
+
 }
 
 #endif

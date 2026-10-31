@@ -134,6 +134,51 @@ TEST_F(PerfTimerTest, ShutdownStopsTimer) {
     reader.Close();
 }
 
+TEST(PerfTimerOnDemandTest, RequestPublishesOnceAndAcknowledges) {
+    using namespace SpDiag;
+    const std::string name = "/spdiag_test_on_demand_" +
+                             std::to_string(getpid());
+    auto config = MakeStartCfg(name.c_str());
+    config.dumpIntervalMs = 0;
+    SpDiagManager manager;
+    ASSERT_TRUE(manager.StartShm(config));
+    PerfConfig perfConfig;
+    perfConfig.shmName = name;
+    perfConfig.levelGate = 4;
+    perfConfig.dumpIntervalMs = 0;
+    PerfManager::Instance().Init(perfConfig);
+    ASSERT_TRUE(PerfManager::Instance().IsInitialized());
+
+    ShmReader reader;
+    ASSERT_TRUE(reader.Open(name));
+    const uint64_t before = reader.Header().dumpSeqNo.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    EXPECT_EQ(reader.Header().dumpSeqNo.load(), before);
+    PerfPoint point(PerfKeyDefined::COMPUTE_MATMUL,
+                    PerfLevel::SUB_SYSTEM);
+    point.Start();
+    point.End(0);
+    ASSERT_TRUE(manager.RequestFreshDump(config));
+    const uint64_t after = reader.Header().dumpSeqNo.load();
+    EXPECT_GT(after, before);
+    const ProgramEntry* registry = reader.ReadProgramRegistry();
+    EXPECT_EQ(__atomic_load_n(&registry[0].dumpAckGeneration,
+                              __ATOMIC_ACQUIRE),
+              reader.Header().dumpRequestGeneration.load());
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    EXPECT_EQ(reader.Header().dumpSeqNo.load(), after);
+    reader.Close();
+    PerfManager::Instance().Shutdown();
+    EXPECT_TRUE(manager.StopShm(config));
+}
+
+TEST(PerfTimerOnDemandTest, DumpWindowBudgetScalesWithCapacityAndWriters) {
+    EXPECT_EQ(SpDiag::DumpWindowTimeoutMs(100, 1), 500u);
+    EXPECT_EQ(SpDiag::DumpWindowTimeoutMs(1000, 8), 2400u);
+    EXPECT_EQ(SpDiag::DumpWindowTimeoutMs(10000, 8), 9600u);
+    EXPECT_EQ(SpDiag::DumpWindowTimeoutMs(10000, 100), 60000u);
+}
+
 #ifdef SPDIAG_ENABLE_PERCENTILE
 TEST_F(PerfTimerTest, ClearDoesNotRepublishProcessLocalTopN) {
     using namespace SpDiag;

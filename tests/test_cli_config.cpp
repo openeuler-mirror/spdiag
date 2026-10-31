@@ -30,7 +30,7 @@ TEST(CliConfigTest, DefaultValues) {
     EXPECT_FALSE(config.hasLevelRange);
     EXPECT_TRUE(config.sortSpec.empty());
     EXPECT_TRUE(config.filterGlobs.empty());
-    EXPECT_EQ(config.watchIntervalMs, 2000u);
+    EXPECT_EQ(config.watchIntervalMs, 0u);
     EXPECT_FALSE(config.strictSnapshot);
     EXPECT_EQ(config.obTargetPid, -1);
     EXPECT_EQ(config.obIntervalMs, 1000u);
@@ -40,6 +40,7 @@ TEST(CliConfigTest, DefaultValues) {
     EXPECT_EQ(config.dataDir, "/tmp/spdiag_data");
     EXPECT_EQ(config.maxSlots, 1024u);
     EXPECT_EQ(config.maxPrograms, 8u);
+    EXPECT_EQ(config.perCoreTopN, 100u);
 }
 
 static CliConfig Parse(std::vector<std::string> args) {

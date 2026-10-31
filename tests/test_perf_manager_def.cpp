@@ -251,3 +251,37 @@ TEST_F(PerfManagerDefTest, PointNameChangeResetsSlotOnReInit) {
     }
     EXPECT_EQ(tickAfter, 0u) << "slot was not reset after point-name change on re-Init";
 }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+TEST_F(PerfManagerDefTest, ReconnectWithoutNewSamplePreservesLevel) {
+    using namespace SpDiag;
+    constexpr uint32_t slotCount = 3;
+    constexpr auto key = PerfKeyDefined::COMPUTE_MATMUL;
+    PerfManager::Instance().Init(MakePerfCfg("level-program", slotCount));
+    ASSERT_TRUE(PerfManager::Instance().IsInitialized());
+    PerfPoint point(key, PerfLevel::KEY_MODULE);
+    point.Start();
+    point.End(0);
+    PerfManager::Instance().Shutdown();
+
+    PerfManager::Instance().Init(MakePerfCfg("level-program", slotCount));
+    ASSERT_TRUE(PerfManager::Instance().IsInitialized());
+    PerfManager::Instance().Shutdown();
+
+    ShmReader reader;
+    ASSERT_TRUE(reader.Open(kShmName));
+    ShardBuffer shards;
+    ASSERT_TRUE(reader.SnapshotShards(shards));
+    const uint32_t slot = reader.ReadProgramRegistry()[0].baseSlot +
+                          static_cast<uint32_t>(key);
+    bool restored = false;
+    for (uint32_t core = 0; core < reader.Header().numCores; ++core) {
+        if (static_cast<const ShardBuffer&>(shards).topN(core, slot).count == 0)
+            continue;
+        restored = true;
+        EXPECT_EQ(shards.stats(core)[slot].level,
+                  static_cast<uint8_t>(PerfLevel::KEY_MODULE));
+    }
+    EXPECT_TRUE(restored);
+}
+#endif

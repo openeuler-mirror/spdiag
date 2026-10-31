@@ -28,6 +28,7 @@ namespace SpDiag {
 
 namespace {
 constexpr auto RLX = std::memory_order_relaxed;
+constexpr auto requestPollInterval = std::chrono::milliseconds(50);
 }
 
 PerfTimer::PerfTimer(ShmWriter& writer, PerfShardManager& shardManager, uint32_t intervalMs,
@@ -41,6 +42,8 @@ PerfTimer::PerfTimer(ShmWriter& writer, PerfShardManager& shardManager, uint32_t
 {
     if (const ShmHeader* header = writer_.Header()) {
         generation_ = __atomic_load_n(&header->generation, __ATOMIC_ACQUIRE);
+        observedDumpRequest_ = header->dumpRequestGeneration.load(
+            std::memory_order_acquire);
     }
 }
 
@@ -65,7 +68,7 @@ void PerfTimer::Stop() {
     if (thread_.joinable()) {
         thread_.join();
     }
-    DoOneDump();
+    (void)DoOneDump();
 }
 
 void PerfTimer::SetInterval(uint32_t intervalMs) {
@@ -73,21 +76,43 @@ void PerfTimer::SetInterval(uint32_t intervalMs) {
 }
 
 void PerfTimer::TriggerDumpNow() {
+    localDumpRequested_.store(true, std::memory_order_release);
     cv_.notify_all();
 }
 
 void PerfTimer::DumpLoop() {
     try {
+        auto nextPeriodic = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(intervalMs_);
         while (running_.load(std::memory_order_acquire)) {
             std::unique_lock<std::mutex> lock(cvMutex_);
-            cv_.wait_for(lock, std::chrono::milliseconds(intervalMs_),
-                         [this]() { return !running_.load(std::memory_order_acquire); });
+            cv_.wait_for(lock, requestPollInterval, [this]() {
+                return !running_.load(std::memory_order_acquire) ||
+                       localDumpRequested_.load(std::memory_order_acquire);
+            });
+            lock.unlock();
 
             if (!running_.load(std::memory_order_acquire)) {
                 break;
             }
-
-            DoOneDump();
+            ShmHeader* header = writer_.Header();
+            if (header == nullptr) continue;
+            const uint64_t request = header->dumpRequestGeneration.load(
+                std::memory_order_acquire);
+            const auto now = std::chrono::steady_clock::now();
+            const bool requested = request != observedDumpRequest_;
+            const bool local = localDumpRequested_.exchange(
+                false, std::memory_order_acq_rel);
+            const bool periodic = intervalMs_ > 0 && now >= nextPeriodic;
+            if ((requested || local || periodic) && DoOneDump()) {
+                if (requested) {
+                    observedDumpRequest_ = request;
+                    Acknowledge(request);
+                }
+                if (periodic) {
+                    nextPeriodic = now + std::chrono::milliseconds(intervalMs_);
+                }
+            }
         }
     } catch (const std::exception& e) {
         SPDIAG_LOG_ERROR(LogModule::SDK, "PerfTimer DumpLoop exception: %s", e.what());
@@ -96,13 +121,13 @@ void PerfTimer::DumpLoop() {
     }
 }
 
-void PerfTimer::DoOneDump() {
+bool PerfTimer::DoOneDump() {
     ShmHeader* hdr = writer_.Header();
     if (!hdr) {
-        return;
+        return false;
     }
     if (ClearRequested(hdr)) {
-        return;
+        return false;
     }
 
     const uint32_t numCores = shardManager_.GetNumCores();
@@ -117,7 +142,7 @@ void PerfTimer::DoOneDump() {
     } catch (const std::bad_alloc&) {
         SPDIAG_LOG_ERROR(LogModule::SDK,
                          "failed to allocate PerfStat dump storage");
-        return;
+        return false;
     }
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
@@ -132,7 +157,7 @@ void PerfTimer::DoOneDump() {
         !CheckedSizeMultiply(numCores, slotCount_, requiredCounts)) {
         SPDIAG_LOG_ERROR(LogModule::SDK,
                          "Top-N snapshot size overflow");
-        return;
+        return false;
     }
     try {
         if (snapshotTopNSize_ != requiredValues ||
@@ -149,7 +174,7 @@ void PerfTimer::DoOneDump() {
     } catch (const std::bad_alloc&) {
         SPDIAG_LOG_ERROR(LogModule::SDK,
                          "failed to allocate Top-N dump storage");
-        return;
+        return false;
     }
 
     // Atomic loads happen before the shared-memory writer window. The
@@ -168,15 +193,17 @@ void PerfTimer::DoOneDump() {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 50);
 
-    // 上一轮进程崩溃可能导致 dumpSeqNo 永久为奇数，新进程自旋到死。
-    // 给锁等待设 500ms 硬上限：正常持锁 ~1ms，即使内核调度换出 CPU
-    // 也远不到此限；仅在上轮崩溃场景触发，超时后放弃本轮 dump。
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    // Keep the wait bounded for a writer that died with an odd sequence, but
+    // allow all registered writers to serialize a large-K dump without
+    // discarding their already-built snapshots and immediately rebuilding.
+    auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(DumpWindowTimeoutMs(
+            hdr->perCoreTopNCapacity, hdr->registeredPrograms));
     while (true) {
         uint64_t expected = hdr->dumpSeqNo.load(std::memory_order_acquire);
         if (expected % 2 != 0) {
             if (std::chrono::steady_clock::now() >= deadline) {
-                return;
+                return false;
             }
             std::this_thread::sleep_for(std::chrono::microseconds(dist(gen)));
             continue;
@@ -190,7 +217,7 @@ void PerfTimer::DoOneDump() {
 
     if (ClearRequested(hdr)) {
         hdr->dumpSeqNo.fetch_add(1, std::memory_order_release);
-        return;
+        return false;
     }
 
     uint32_t shmMaxSlots = hdr->maxSlots;
@@ -223,6 +250,16 @@ void PerfTimer::DoOneDump() {
     hdr->dumpSeqNo.fetch_add(1, std::memory_order_release);
 
     writer_.WriteHeader(*hdr);
+    return true;
+}
+
+void PerfTimer::Acknowledge(uint64_t requestGeneration) {
+    ShmHeader* header = writer_.Header();
+    if (header == nullptr || programIndex_ >= header->registeredPrograms) return;
+    auto* registry = reinterpret_cast<ProgramEntry*>(
+        reinterpret_cast<uint8_t*>(header) + header->registryOffset);
+    __atomic_store_n(&registry[programIndex_].dumpAckGeneration,
+                     requestGeneration, __ATOMIC_RELEASE);
 }
 
 bool PerfTimer::ClearRequested(ShmHeader* header) {

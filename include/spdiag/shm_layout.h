@@ -30,13 +30,21 @@ constexpr uint32_t maxProgramsDefault = 8;
 constexpr uint32_t MAX_PERF_SLOTS    = 256;
 constexpr uint32_t MAX_GLOBAL_POINTS = MAX_PERF_SLOTS;
 constexpr uint32_t defaultPerCoreTopN = 100;
-constexpr uint32_t maxPerCoreTopN     = defaultPerCoreTopN;
+constexpr uint32_t maxPerCoreTopN     = 10000;
 #ifdef SPDIAG_ENABLE_PERCENTILE
 constexpr uint32_t maxTopN           = defaultPerCoreTopN;
 #endif
 constexpr uint32_t perflogTimestampCount = 100;
 constexpr uint32_t nameLen           = 64;
-constexpr uint8_t shmLayoutAbiRevision = 2;
+
+inline uint64_t DumpWindowTimeoutMs(uint32_t perCoreTopNCapacity,
+                                    uint32_t registeredPrograms) {
+    const uint64_t writers = std::max<uint32_t>(1, registeredPrograms);
+    const uint64_t perWriterMs = 200ULL + perCoreTopNCapacity / 10ULL;
+    return std::max<uint64_t>(
+        500, std::min<uint64_t>(60000, writers * perWriterMs));
+}
+constexpr uint8_t shmLayoutAbiRevision = 3;
 constexpr uint8_t shmFeaturePercentile = 1U << 0;
 constexpr uint8_t shmFeaturePerfLog = 1U << 1;
 
@@ -60,6 +68,7 @@ struct ProgramEntry {
     int32_t  pid;
     uint8_t  active;
     uint8_t  reserved[3];
+    alignas(8) uint64_t dumpAckGeneration;
 };
 
 struct alignas(64) PerfStat {
@@ -342,6 +351,7 @@ struct ShmHeader {
     uint32_t                perCoreTopNCapacity = defaultPerCoreTopN;
     uint32_t                dumpIntervalMs;
     uint32_t                generation;     // 每次 CreateShm 递增，供 SDK 检测 SHM 重启
+    std::atomic<uint64_t>   dumpRequestGeneration;
     // dumpSeqNo 偶数/奇数锁协议：偶数=空闲，奇数=持锁中。
     // 约束：整个系统有且仅有一个 writer 线程（PerfTimer）执行 CAS +1/-1。
     // 增加第二个 writer 会破坏协议，需重新设计锁层级。

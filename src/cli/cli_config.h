@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <vector>
+#include "spdiag/shm_layout.h"
 
 namespace SpDiag {
 
@@ -99,6 +100,7 @@ struct CliConfig {
     std::string shmName         = "/spdiag_shm_default";
     uint32_t    expectedVersion = 1;
     std::string configPath;
+    std::string configError;
     std::string logLevelStr;        // --log-level 参数值 (DEBUG/INFO/WARN/ERROR)
 
     bool        showDetail      = false;
@@ -111,7 +113,7 @@ struct CliConfig {
     uint8_t     levelRangeEnd   = 0;
     std::string sortSpec;
     std::vector<std::string> filterGlobs;
-    uint32_t    watchIntervalMs = 2000;
+    uint32_t    watchIntervalMs = 0;  // 0: derive a safe interval from K
     bool        strictSnapshot  = false;
 #ifdef SPDIAG_ENABLE_PERFLOG
     bool        perflogShow     = false;
@@ -142,6 +144,7 @@ struct CliConfig {
 
     uint32_t    maxSlots       = 1024;
     uint32_t    maxPrograms    = 8;
+    uint32_t    perCoreTopN    = defaultPerCoreTopN;
 
     uint32_t    userFlags      = 0;
 

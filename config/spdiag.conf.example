@@ -10,7 +10,7 @@ data_dir = /tmp/spdiag_data
 # History ring buffer capacity
 history_size = 30
 
-# Dump interval in milliseconds (0 means use 1000ms)
+# Periodic dump interval in milliseconds. 0 uses CLI-triggered dumps only.
 dump_interval_ms = 0
 
 # Performance level gate (0-4, 0 means auto-select based on mode)
@@ -22,3 +22,16 @@ num_cores = 0
 [perf]
 maxSlots = 192
 maxPrograms = 1
+
+# Slowest samples retained by each CPU-core heap. Default: 100; range: 100..10000.
+# PerCoreTopNStorage is runtime-sized for every K and remains cumulative.
+# With 256 slots, LocalShard per core is about 0.669/2.426/20.004 MiB
+# for K=100/1000/10000. Across 392 cores in one libspdiag consumer,
+# that is about 0.256/0.929/7.658 GiB. Fewer registered slots use less.
+# The reusable timer snapshot adds up to 0.075/0.748/7.477 GiB at the
+# same 392-core/256-slot limits; peak local totals are 0.331/1.677/15.135 GiB.
+# Shared memory keeps one K-value storage per effective core and maxSlots.
+# With maxSlots=2048 and 308 effective cores, K=100/1000/10000 uses
+# about 1.603/5.833/48.131 GiB. With 392 effective cores it uses
+# about 2.039/7.423/61.256 GiB.
+per_core_top_n = 100

@@ -42,6 +42,7 @@ num_cores = 16
 [perf]
 maxSlots = 2048
 maxPrograms = 32
+per_core_top_n = 1000
 )";
     std::string path = WriteTempConfig(configContent);
     CliConfig cfg = CliConfig::LoadFromFile(path, true);
@@ -56,6 +57,7 @@ maxPrograms = 32
     EXPECT_EQ(cfg.numCores, 16u);
     EXPECT_EQ(cfg.maxSlots, 2048u);
     EXPECT_EQ(cfg.maxPrograms, 32u);
+    EXPECT_EQ(cfg.perCoreTopN, 1000u);
 }
 
 TEST(CliConfigExtraTest, ParseConfigFile_PartialKeys) {
@@ -83,6 +85,19 @@ maxSlots = 512
     EXPECT_EQ(cfg.levelGate, 0);
     EXPECT_EQ(cfg.numCores, 0u);
     EXPECT_EQ(cfg.maxPrograms, 8u);
+    EXPECT_EQ(cfg.perCoreTopN, 100u);
+}
+
+TEST(CliConfigExtraTest, ConfigFileRejectsInvalidPerCoreTopN) {
+    std::string path = WriteTempConfig("[perf]\nper_core_top_n = invalid\n");
+    CliConfig cfg = CliConfig::LoadFromFile(path, true);
+    std::remove(path.c_str());
+    EXPECT_FALSE(cfg.configError.empty());
+
+    path = WriteTempConfig("[perf]\nper_core_top_n = 10001\n");
+    cfg = CliConfig::LoadFromFile(path, true);
+    std::remove(path.c_str());
+    EXPECT_FALSE(cfg.configError.empty());
 }
 
 TEST(CliConfigExtraTest, ConfigFileNotFound) {

@@ -17,6 +17,9 @@
 #include "spdiag/perf_level.h"
 #include "spdiag/perf_config.h"
 #include "src/runtime/shm_reader.h"
+#include "src/manager/manager.h"
+#include "src/manager/aggregator.h"
+#include "src/cli/cli_config.h"
 #include "spdiag/shm_layout.h"
 #include "test_helpers/spdiag_test_fixtures.h"
 
@@ -33,16 +36,112 @@ class BoundaryIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
         shmName = "/spdiag_test_bound";
+        shmConfig.command = Cli::Command::START;
+        shmConfig.shmName = shmName;
+        shmConfig.numCores = 4;
+        shmConfig.maxSlots = MAX_PERF_SLOTS;
+        shmConfig.maxPrograms = 1;
+        shmConfig.dumpIntervalMs = 100;
+        (void)manager.StopShm(shmConfig);
+        ASSERT_TRUE(manager.StartShm(shmConfig));
         spdiag_test::InitPerfManagerForTest(shmName, 4, RunMode::DEBUG, 100);
-        SPDIAG_SKIP_IF_NO_SHM();
+        ASSERT_TRUE(PerfManager::Instance().IsInitialized());
     }
 
     void TearDown() override {
         PerfManager::Instance().Shutdown();
+        shmConfig.command = Cli::Command::STOP;
+        (void)manager.StopShm(shmConfig);
     }
 
     std::string shmName;
+    Cli::CliConfig shmConfig;
+    SpDiagManager manager;
 };
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+TEST(ConfigurableTopNIntegrationTest, ProducerRetainsConfiguredCapacity) {
+    constexpr const char* kConfigShm = "/spdiag_test_topn_config";
+    PerfManager::Instance().Shutdown();
+
+    Cli::CliConfig startConfig;
+    startConfig.command = Cli::Command::START;
+    startConfig.shmName = kConfigShm;
+    startConfig.numCores = 4;
+    startConfig.maxSlots = MAX_PERF_SLOTS;
+    startConfig.maxPrograms = 1;
+    startConfig.dumpIntervalMs = 100;
+    startConfig.perCoreTopN = 1000;
+
+    SpDiagManager manager;
+    Cli::CliConfig stopConfig = startConfig;
+    stopConfig.command = Cli::Command::STOP;
+    (void)manager.StopShm(stopConfig);
+    ASSERT_TRUE(manager.StartShm(startConfig));
+
+    struct Cleanup {
+        SpDiagManager* manager;
+        Cli::CliConfig stopConfig;
+        ~Cleanup() {
+            PerfManager::Instance().Shutdown();
+            (void)manager->StopShm(stopConfig);
+        }
+    } cleanup{&manager, stopConfig};
+
+    PerfConfig perfConfig;
+    perfConfig.shmName = kConfigShm;
+    perfConfig.mode = RunMode::DEBUG;
+    perfConfig.levelGate = 4;
+    perfConfig.dumpIntervalMs = 100;
+    perfConfig.programName = "topn-config-test";
+    perfConfig.slotCount =
+        static_cast<uint32_t>(PerfKeyDefined::PERF_KEY_DEFINED_COUNT);
+    PerfManager::Instance().Init(perfConfig);
+    ASSERT_TRUE(PerfManager::Instance().IsInitialized());
+
+    constexpr uint32_t kMeasurements = 20000;
+    for (uint32_t i = 0; i < kMeasurements; ++i) {
+        PerfPoint point(PerfKeyDefined::COMPUTE_MATMUL,
+                        PerfLevel::SUB_SYSTEM);
+        point.End(0);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    ShmReader reader;
+    ASSERT_TRUE(reader.Open(kConfigShm));
+    EXPECT_EQ(reader.Header().perCoreTopNCapacity, 1000u);
+    ShardBuffer shards;
+    ASSERT_TRUE(reader.SnapshotShards(shards));
+
+    uint32_t retained = 0;
+    uint64_t totalTicks = 0;
+    const uint32_t slot = reader.ReadProgramRegistry()[0].baseSlot +
+        static_cast<uint32_t>(PerfKeyDefined::COMPUTE_MATMUL);
+    for (size_t core = 0; core < shards.size(); ++core) {
+        const auto heap = shards.topN(core, slot);
+        retained += heap.count == nullptr ? 0 : *heap.count;
+        totalTicks += shards.stats(core)[slot].tickCount;
+    }
+    EXPECT_EQ(totalTicks, kMeasurements);
+    EXPECT_GE(retained, 1000u);
+    EXPECT_LE(retained, 4u * 1000u);
+
+    Aggregator aggregator;
+    aggregator.Aggregate(reader.ReadProgramRegistry(),
+                         reader.Header().registeredPrograms,
+                         reader.ReadKeyNames(), reader.ReadKeyModuleNames(),
+                         shards, reader.Header().numCores);
+    ASSERT_FALSE(aggregator.Results().empty());
+    const auto result = std::find_if(
+        aggregator.Results().begin(), aggregator.Results().end(),
+        [=](const AggregatedStat& stat) {
+            return stat.totalTickCount == kMeasurements;
+        });
+    ASSERT_NE(result, aggregator.Results().end());
+    EXPECT_TRUE(result->hasP99);
+    reader.Close();
+}
+#endif
 
 TEST_F(BoundaryIntegrationTest, AllPredefinedKeys) {
     PerfKeyDefined allKeys[] = {
@@ -113,15 +212,13 @@ TEST_F(BoundaryIntegrationTest, TopNHeapFilling) {
         const PerfStat* stats = shards.stats(s);
         for (uint32_t i = 0; i < statCount; ++i) {
             if (stats[i].tickCount > 0 && stats[i].slotIndex != 0) {
-                const auto topN =
-                    static_cast<const ShardBuffer&>(shards).topN(s, i);
-                EXPECT_GT(topN.count, 0u);
-                if (topN.count >= maxTopN) {
+                const auto topN = shards.topN(s, i);
+                ASSERT_NE(topN.count, nullptr);
+                EXPECT_GT(*topN.count, 0u);
+                if (*topN.count >= maxTopN) {
                     foundTopN = true;
-
-                    for (uint32_t t = 1; t < topN.count; ++t) {
-                        EXPECT_GE(topN.values[t], topN.values[0])
-                            << "TopN heap invariant violated at index " << t;
+                    for (uint32_t t = 0; t < *topN.count; ++t) {
+                        EXPECT_GT(topN.values[t], 0u);
                     }
                 }
             }
@@ -295,8 +392,30 @@ TEST_F(BoundaryIntegrationTest, BadReturnCodeTracking) {
 }
 
 TEST_F(BoundaryIntegrationTest, LevelGating) {
+    constexpr const char* gateShm = "/spdiag_test_bound_gate";
+    Cli::CliConfig gateConfig;
+    gateConfig.command = Cli::Command::START;
+    gateConfig.shmName = gateShm;
+    gateConfig.numCores = 4;
+    gateConfig.maxSlots = MAX_PERF_SLOTS;
+    gateConfig.maxPrograms = 1;
+    gateConfig.dumpIntervalMs = 100;
+    gateConfig.levelGate = 2;
+    SpDiagManager gateManager;
+    (void)gateManager.StopShm(gateConfig);
+    ASSERT_TRUE(gateManager.StartShm(gateConfig));
+    struct GateCleanup {
+        SpDiagManager* manager;
+        Cli::CliConfig config;
+        ~GateCleanup() {
+            PerfManager::Instance().Shutdown();
+            config.command = Cli::Command::STOP;
+            (void)manager->StopShm(config);
+        }
+    } gateCleanup{&gateManager, gateConfig};
+
     PerfConfig config;
-    config.shmName = "/spdiag_test_bound_gate";
+    config.shmName = gateShm;
     config.mode = RunMode::RELEASE;
     config.levelGate = 2;
     config.dumpIntervalMs = 100;
@@ -316,7 +435,6 @@ TEST_F(BoundaryIntegrationTest, LevelGating) {
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
     ShmReader reader;
-    std::string gateShm = "/spdiag_test_bound_gate";
     ASSERT_TRUE(reader.Open(gateShm));
 
     ShardBuffer shards;

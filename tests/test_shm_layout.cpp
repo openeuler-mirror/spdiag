@@ -31,8 +31,8 @@ TEST(ShmLayoutTest, Constants) {
 #endif
     EXPECT_EQ(SpDiag::nameLen, 64u);
     EXPECT_EQ(SpDiag::defaultPerCoreTopN, 100u);
-    EXPECT_EQ(SpDiag::maxPerCoreTopN, 100u);
-    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 2u);
+    EXPECT_EQ(SpDiag::maxPerCoreTopN, 10000u);
+    EXPECT_EQ(SpDiag::shmLayoutAbiRevision, 3u);
 }
 
 TEST(ShmLayoutTest, FeatureMaskMatchesCompileTimeLayout) {
@@ -78,11 +78,18 @@ TEST(ShmLayoutTest, RejectsZeroDimensions) {
     EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 0, layout));
 }
 
-TEST(ShmLayoutTest, AcceptsOnlyCurrentPerCoreTopNCapacity) {
+TEST(ShmLayoutTest, ValidatesConfigurablePerCoreTopNCapacity) {
     SpDiag::ShmLayoutDescriptor defaultLayout;
+    SpDiag::ShmLayoutDescriptor expandedLayout;
     EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 4, defaultLayout, 99));
     EXPECT_TRUE(SpDiag::ComputeShmLayout(256, 8, 4, defaultLayout, 100));
-    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 4, defaultLayout, 101));
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    EXPECT_TRUE(SpDiag::ComputeShmLayout(256, 8, 4, expandedLayout, 1000));
+    EXPECT_GT(expandedLayout.totalSize, defaultLayout.totalSize);
+#else
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 4, expandedLayout, 1000));
+#endif
+    EXPECT_FALSE(SpDiag::ComputeShmLayout(256, 8, 4, expandedLayout, 10001));
 }
 
 TEST(ShmLayoutTest, RejectsOverflowingDimensions) {

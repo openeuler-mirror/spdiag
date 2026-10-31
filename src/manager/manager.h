@@ -36,6 +36,7 @@ struct CollectResult {
     ShardBuffer shards;
     uint32_t numCores = 0;
     uint32_t maxSlots = 0;
+    uint32_t perCoreTopNCapacity = defaultPerCoreTopN;
     // 全局 PerfPoint 累加区快照（与每核 runtime Top-N 分离）。
     GlobalPerfStatBuffer globalAccumData;
     uint32_t globalAccumCount = 0;
@@ -56,6 +57,7 @@ public:
     void RegisterPluginFactory(const std::string& name, PluginFactory factory);
 
     CollectResult CollectAndAggregate(const Cli::CliConfig& config);
+    bool RequestFreshDump(const Cli::CliConfig& config);
     std::vector<DumpRecord> QueryHistory(const Cli::CliConfig& config);
     bool ClearData(const Cli::CliConfig& config);
     bool CheckShmAlive(const std::string& shmName) const;
