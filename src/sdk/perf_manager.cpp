@@ -190,7 +190,13 @@ bool PerfManager::ConnectToExistingShm(uint32_t dumpIntervalHint) {
 #endif
 
     shardManager_ = PerfShardManager();
-    shardManager_.Init(numCores_);
+    if (!shardManager_.Init(numCores_, slotCount_,
+                            existingHdr->perCoreTopNCapacity)) {
+        SPDIAG_LOG_ERROR(LogModule::SDK,
+                         "failed to allocate per-core Top-N storage");
+        shmWriter_.reset();
+        return false;
+    }
 
     if (programName_.empty()) {
         const char* autoName = detail::AutoProgramName();
@@ -419,6 +425,28 @@ bool PerfManager::ConnectAndRegister(const ConnectParams& params) {
 
     baseOffset_ = baseSlot;
 
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    // Per-core Top-N is cumulative for every configured K. When a program
+    // entry is reused, rebuild the process-local heap from the current SHM
+    // candidates before the timer starts overwriting snapshots.
+    if (reused) {
+        LocalPerfShard* localShards = shardManager_.GetShardArray();
+        for (uint32_t core = 0; core < numCores_; ++core) {
+            const void* shmShard = shmWriter_->ShardPtr(programIndex_, core);
+            for (uint32_t slot = 0; slot < slotCount_; ++slot) {
+                const uint32_t globalSlot = baseOffset_ + slot;
+                if (globalSlot >= hdr->maxSlots) {
+                    break;
+                }
+                const auto source = ShmShardTopN(
+                    shmShard, globalSlot, hdr->maxSlots,
+                    hdr->perCoreTopNCapacity);
+                shardManager_.RestoreTopN(localShards[core], slot, source);
+            }
+        }
+    }
+#endif
+
     Platform::CalibrateTimestamp();
 
     // 初始化全局 PerfPoint 工厂（进程内原子累加器数组），数量与 SHM 全局区一致。
@@ -462,10 +490,6 @@ uint8_t PerfManager::LevelGate() const {
 
 uint32_t PerfManager::NumCores() const {
     return numCores_;
-}
-
-PerfShardManager& PerfManager::GetShardManager() {
-    return shardManager_;
 }
 
 void PerfManager::LoadDefFile(const char* defPath) {

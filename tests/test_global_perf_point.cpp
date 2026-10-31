@@ -332,11 +332,11 @@ TEST_F(GlobalPerfPointTest, CliReadsGlobalRegion) {
 
     ShmReader reader;
     ASSERT_TRUE(reader.Open(kShmName));
-    const PerfStat* g = reader.ReadGlobalAccum();
+    const GlobalPerfStat* g = reader.ReadGlobalAccum();
     ASSERT_NE(g, nullptr);
     EXPECT_GT(reader.Header().globalAccumCount, 0u);
     EXPECT_GT(reader.Header().globalAccumOffset, reader.Header().shardsOffset);
-    EXPECT_GT(g[gslot].tickCount, 0u);
+    EXPECT_GT(g[gslot].stat.tickCount, 0u);
     reader.Close();
     // TearDown 的 Shutdown 幂等；SHM 仍在（SDK 仅 unmap）。
 }
@@ -365,7 +365,7 @@ TEST_F(GlobalPerfPointTest, GlobalAggregatesAlongsideLocal) {
     ASSERT_TRUE(reader.Open(kShmName));
     const ShmHeader& hdr = reader.Header();
     ShardBuffer shards;
-    PerfStatBuffer globalData;
+    GlobalPerfStatBuffer globalData;
     ASSERT_TRUE(reader.SnapshotShards(shards, &globalData));
     const ProgramEntry* programs = reader.ReadProgramRegistry();
     const char (*keyNames)[nameLen] = reader.ReadKeyNames();

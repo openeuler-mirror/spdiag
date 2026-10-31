@@ -113,12 +113,14 @@ TEST_F(BoundaryIntegrationTest, TopNHeapFilling) {
         const PerfStat* stats = shards.stats(s);
         for (uint32_t i = 0; i < statCount; ++i) {
             if (stats[i].tickCount > 0 && stats[i].slotIndex != 0) {
-                EXPECT_GT(stats[i].topNCount, 0);
-                if (stats[i].topNCount >= maxTopN) {
+                const auto topN =
+                    static_cast<const ShardBuffer&>(shards).topN(s, i);
+                EXPECT_GT(topN.count, 0u);
+                if (topN.count >= maxTopN) {
                     foundTopN = true;
 
-                    for (uint8_t t = 1; t < stats[i].topNCount; ++t) {
-                        EXPECT_GE(stats[i].topN[t], stats[i].topN[0])
+                    for (uint32_t t = 1; t < topN.count; ++t) {
+                        EXPECT_GE(topN.values[t], topN.values[0])
                             << "TopN heap invariant violated at index " << t;
                     }
                 }

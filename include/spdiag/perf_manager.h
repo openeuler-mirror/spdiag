@@ -61,7 +61,7 @@ public:
     RunMode Mode() const;
     uint8_t LevelGate() const;
     uint32_t NumCores() const;
-    PerfShardManager& GetShardManager();
+    PerfShardManager& GetShardManager() { return shardManager_; }
 
 private:
     PerfManager();

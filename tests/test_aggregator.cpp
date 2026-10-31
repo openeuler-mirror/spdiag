@@ -13,7 +13,9 @@
 #include <gtest/gtest.h>
 #include "spdiag/shm_layout.h"
 #include "src/manager/aggregator.h"
+#include <algorithm>
 #include <cstring>
+#include <initializer_list>
 
 namespace {
 
@@ -54,6 +56,16 @@ void SetShardStat(SpDiag::ShardBuffer& shards, size_t programIdx, size_t coreIdx
     stat.minTimeNs = minNs;
     stat.maxTimeNs = maxNs;
 }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+void SetTopN(SpDiag::ShardBuffer& shards, size_t core, uint32_t slot,
+             std::initializer_list<uint64_t> values) {
+    auto topN = shards.topN(core, slot);
+    ASSERT_LE(values.size(), topN.capacity);
+    std::copy(values.begin(), values.end(), topN.values);
+    *topN.count = static_cast<uint16_t>(values.size());
+}
+#endif
 
 }
 
@@ -151,10 +163,7 @@ TEST(AggregatorTest, TopNMerge) {
     stats0[1].totalTimeNs = 600;
     stats0[1].minTimeNs = 100;
     stats0[1].maxTimeNs = 300;
-    stats0[1].topN[0] = 300;
-    stats0[1].topN[1] = 200;
-    stats0[1].topN[2] = 100;
-    stats0[1].topNCount = 3;
+    SetTopN(ctx.shards, 0, 1, {300, 200, 100});
 
     SpDiag::PerfStat* stats1 = ctx.shards.stats(1);
     stats1[1].slotIndex = 1;
@@ -162,10 +171,7 @@ TEST(AggregatorTest, TopNMerge) {
     stats1[1].totalTimeNs = 900;
     stats1[1].minTimeNs = 150;
     stats1[1].maxTimeNs = 400;
-    stats1[1].topN[0] = 400;
-    stats1[1].topN[1] = 350;
-    stats1[1].topN[2] = 150;
-    stats1[1].topNCount = 3;
+    SetTopN(ctx.shards, 1, 1, {400, 350, 150});
 
     SpDiag::Aggregator agg;
     agg.Aggregate(ctx.programs, 1, ctx.keyPointNames, ctx.keyModuleNames,
@@ -189,12 +195,7 @@ TEST(AggregatorTest, PercentileCalculation) {
     stats0[1].totalTimeNs = 10000;
     stats0[1].minTimeNs = 10;
     stats0[1].maxTimeNs = 500;
-    stats0[1].topN[0] = 500;
-    stats0[1].topN[1] = 400;
-    stats0[1].topN[2] = 300;
-    stats0[1].topN[3] = 200;
-    stats0[1].topN[4] = 100;
-    stats0[1].topNCount = 5;
+    SetTopN(ctx.shards, 0, 1, {500, 400, 300, 200, 100});
 
     SpDiag::Aggregator agg;
     agg.Aggregate(ctx.programs, 1, ctx.keyPointNames, ctx.keyModuleNames,
@@ -219,10 +220,7 @@ TEST(AggregatorTest, MergeDeltaAccumulation) {
 
     SetShardStat(ctx.shards, 0, 0, TEST_MAX_SLOTS, 1, 10, 0, 0, 10, 1000, 50, 200);
 #ifdef SPDIAG_ENABLE_PERCENTILE
-    SpDiag::PerfStat* stats0 = ctx.shards.stats(0);
-    stats0[1].topN[0] = 200;
-    stats0[1].topN[1] = 150;
-    stats0[1].topNCount = 2;
+    SetTopN(ctx.shards, 0, 1, {200, 150});
 #endif
 
     SpDiag::Aggregator agg;

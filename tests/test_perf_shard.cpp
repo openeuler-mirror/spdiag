@@ -11,6 +11,10 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <atomic>
+#include <functional>
+#include <thread>
 #include "spdiag/perf_shard.h"
 #include "spdiag/shm_layout.h"
 
@@ -77,11 +81,14 @@ TEST(PerfShardTest, LocalPerfShardCopy) {
 
 TEST(PerfShardTest, SnapshotAndReset) {
     SpDiag::PerfShardManager mgr;
-    mgr.Init(1);
+    ASSERT_TRUE(mgr.Init(1, 4, SpDiag::defaultPerCoreTopN));
 
     SpDiag::LocalPerfShard& shard = mgr.GetShard();
     shard.stats[1].backGoodCount = 10;
     shard.stats[1].tickCount = 10;
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    mgr.InsertTopNValue(shard, 1, 100);
+#endif
 
     SpDiag::LocalPerfShard snapshot{};
     mgr.SnapshotAndReset(snapshot, shard);
@@ -90,4 +97,48 @@ TEST(PerfShardTest, SnapshotAndReset) {
     EXPECT_EQ(snapshot.stats[1].tickCount, 10u);
     EXPECT_EQ(shard.stats[1].backGoodCount, 0u);
     EXPECT_EQ(shard.stats[1].tickCount, 0u);
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    EXPECT_EQ(snapshot.stats[1].topNCount, 1u);
+    EXPECT_EQ(mgr.GetTopN(shard, 1).values[0].load(), 100u);
+    EXPECT_EQ(mgr.GetTopN(shard, 1).count->load(
+                  std::memory_order_relaxed), 1u);
+#endif
 }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+TEST(PerfShardTest, PerCoreTopNConcurrentSnapshotConverges) {
+    constexpr uint32_t capacity = SpDiag::defaultPerCoreTopN;
+    constexpr uint64_t samples = 5000;
+    SpDiag::PerfShardManager mgr;
+    ASSERT_TRUE(mgr.Init(1, 2, capacity));
+    SpDiag::LocalPerfShard& shard = mgr.GetShard();
+    std::atomic<bool> done{false};
+    uint32_t snapshots = 0;
+
+    std::thread producer([&]() {
+        for (uint64_t value = 1; value <= samples; ++value) {
+            mgr.InsertTopNValue(shard, 1, value);
+            if ((value & 0xff) == 0) {
+                std::this_thread::yield();
+            }
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    std::vector<uint64_t> snapshotTopN(2u * capacity);
+    std::vector<uint16_t> counts(2);
+    while (!done.load(std::memory_order_acquire)) {
+        mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard);
+        EXPECT_LE(counts[1], capacity);
+        ++snapshots;
+    }
+    producer.join();
+    mgr.SnapshotTopN(snapshotTopN.data(), counts.data(), shard);
+    EXPECT_GT(snapshots, 0u);
+    ASSERT_EQ(counts[1], capacity);
+    std::sort(snapshotTopN.begin() + capacity, snapshotTopN.end());
+    EXPECT_EQ(snapshotTopN[capacity], samples - capacity + 1);
+    EXPECT_EQ(snapshotTopN.back(), samples);
+}
+
+#endif

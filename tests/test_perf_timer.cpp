@@ -23,7 +23,9 @@
 #include "cli/cli_config.h"
 #include "spdiag/perf_manager.h"
 #include "spdiag/perf_config.h"
+#include "spdiag/perf_key_defined.h"
 #include "spdiag/perf_level.h"
+#include "spdiag/perf_point.h"
 #include "spdiag/shm_layout.h"
 #include "runtime/shm_reader.h"
 
@@ -42,6 +44,15 @@ SpDiag::Cli::CliConfig MakeStartCfg(const char* name) {
     c.levelGate = 4;
     return c;
 }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+uint32_t CountTopN(const SpDiag::ShardBuffer& shards, uint32_t slot) {
+    uint32_t count = 0;
+    for (uint32_t core = 0; core < shards.size(); ++core)
+        count += shards.topN(core, slot).count;
+    return count;
+}
+#endif
 
 }  // namespace
 
@@ -122,3 +133,33 @@ TEST_F(PerfTimerTest, ShutdownStopsTimer) {
     EXPECT_EQ(after, after2);     // timer 已停：再等待 dumpSeqNo 不变
     reader.Close();
 }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+TEST_F(PerfTimerTest, ClearDoesNotRepublishProcessLocalTopN) {
+    using namespace SpDiag;
+    if (!PerfManager::Instance().IsInitialized()) GTEST_SKIP();
+    constexpr auto key = PerfKeyDefined::COMPUTE_MATMUL;
+    const uint32_t slot = static_cast<uint32_t>(key);
+    auto hit = [&]() {
+        PerfPoint point(key, PerfLevel::SUB_SYSTEM);
+        point.Start();
+        point.End(0);
+    };
+    hit();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    SpDiagManager manager;
+    ASSERT_TRUE(manager.ClearData(MakeStartCfg(kShmName)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    ShmReader reader;
+    ASSERT_TRUE(reader.Open(kShmName));
+    ShardBuffer shards;
+    ASSERT_TRUE(reader.SnapshotShards(shards));
+    EXPECT_EQ(CountTopN(shards, slot), 0u);
+
+    hit();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    ASSERT_TRUE(reader.SnapshotShards(shards));
+    EXPECT_EQ(CountTopN(shards, slot), 1u);
+}
+#endif

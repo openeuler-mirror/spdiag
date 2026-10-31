@@ -24,7 +24,7 @@ void Aggregator::Aggregate(
     const ProgramEntry* programs, uint32_t numPrograms,
     const char (*keyPointNames)[nameLen], const char (*keyModuleNames)[nameLen],
     const ShardBuffer& srcShards, uint32_t numCores,
-    const PerfStat* globalStats, uint32_t globalCount)
+    const GlobalPerfStat* globalStats, uint32_t globalCount)
 {
     shards_.resize(srcShards.size(), srcShards.maxSlots());
     for (size_t i = 0; i < srcShards.size(); ++i) {
@@ -71,9 +71,10 @@ void Aggregator::Aggregate(
                 }
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-                for (uint8_t t = 0; t < stat.topNCount && t < maxTopN; ++t) {
-                    if (stat.topN[t] > 0) {
-                        entry.globalTopN.push_back(stat.topN[t]);
+                const auto topN = srcShards.topN(core, j);
+                for (uint32_t t = 0; t < topN.count; ++t) {
+                    if (topN.values[t] > 0) {
+                        entry.globalTopN.push_back(topN.values[t]);
                     }
                 }
 #endif
@@ -87,7 +88,7 @@ void Aggregator::Aggregate(
     if (globalStats != nullptr && globalCount > 0) {
         uint32_t boundedGlobalCount = std::min(globalCount, maxSlots);
         for (uint32_t gi = 0; gi < boundedGlobalCount; ++gi) {
-            const PerfStat& stat = globalStats[gi];
+            const PerfStat& stat = globalStats[gi].stat;
             if (stat.tickCount == 0) {
                 continue;
             }
@@ -113,9 +114,9 @@ void Aggregator::Aggregate(
                 entry.level = stat.level;
             }
 #ifdef SPDIAG_ENABLE_PERCENTILE
-            for (uint8_t t = 0; t < stat.topNCount && t < maxTopN; ++t) {
-                if (stat.topN[t] > 0) {
-                    entry.globalTopN.push_back(stat.topN[t]);
+            for (uint32_t t = 0; t < stat.topNCount && t < maxTopN; ++t) {
+                if (globalStats[gi].topN[t] > 0) {
+                    entry.globalTopN.push_back(globalStats[gi].topN[t]);
                 }
             }
 #endif

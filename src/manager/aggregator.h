@@ -90,7 +90,8 @@ public:
     void Aggregate(const ProgramEntry* programs, uint32_t numPrograms,
                    const char (*keyPointNames)[nameLen], const char (*keyModuleNames)[nameLen],
                    const ShardBuffer& srcShards, uint32_t numCores,
-                   const PerfStat* globalStats = nullptr, uint32_t globalCount = 0);
+                   const GlobalPerfStat* globalStats = nullptr,
+                   uint32_t globalCount = 0);
     void MergeDelta(const std::vector<AggregatedStat>& deltaStats);
 
     const std::vector<AggregatedStat>& Results() const;

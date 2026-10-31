@@ -94,8 +94,9 @@ TEST(DisplayEngineTest, ShowDetailSortsPerCoreMinHeapBeforePercentiles) {
     stat.minTimeNs = 1;
     stat.maxTimeNs = 999;
     const uint64_t heap[] = {111, 444, 333, 999, 888};
-    std::copy(std::begin(heap), std::end(heap), stat.topN);
-    stat.topNCount = static_cast<uint8_t>(std::size(heap));
+    auto topN = shards.topN(0, 1);
+    std::copy(std::begin(heap), std::end(heap), topN.values);
+    *topN.count = static_cast<uint16_t>(std::size(heap));
 
     ProgramEntry program{};
     std::strncpy(program.name, "detail-test", sizeof(program.name) - 1);

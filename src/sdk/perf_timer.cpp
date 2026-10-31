@@ -22,7 +22,7 @@
 #include <random>
 #include <algorithm>
 #include <cstring>
-#include <iostream>
+#include <new>
 
 namespace SpDiag {
 
@@ -39,6 +39,9 @@ PerfTimer::PerfTimer(ShmWriter& writer, PerfShardManager& shardManager, uint32_t
     , slotCount_(slotCount)
     , programIndex_(programIndex)
 {
+    if (const ShmHeader* header = writer_.Header()) {
+        generation_ = __atomic_load_n(&header->generation, __ATOMIC_ACQUIRE);
+    }
 }
 
 PerfTimer::~PerfTimer() {
@@ -98,6 +101,68 @@ void PerfTimer::DoOneDump() {
     if (!hdr) {
         return;
     }
+    if (ClearRequested(hdr)) {
+        return;
+    }
+
+    const uint32_t numCores = shardManager_.GetNumCores();
+    LocalPerfShard* srcShards = shardManager_.GetShardArray();
+
+    try {
+        if (snapshotStatsSize_ != slotCount_) {
+            std::unique_ptr<PerfStat[]> stats(new PerfStat[slotCount_]);
+            snapshotStats_ = std::move(stats);
+            snapshotStatsSize_ = slotCount_;
+        }
+    } catch (const std::bad_alloc&) {
+        SPDIAG_LOG_ERROR(LogModule::SDK,
+                         "failed to allocate PerfStat dump storage");
+        return;
+    }
+
+#ifdef SPDIAG_ENABLE_PERCENTILE
+    const uint32_t perCoreTopNCapacity =
+        shardManager_.GetPerCoreTopNCapacity();
+    size_t perCoreValues = 0;
+    size_t requiredValues = 0;
+    size_t requiredCounts = 0;
+    if (!CheckedSizeMultiply(slotCount_, perCoreTopNCapacity,
+                             perCoreValues) ||
+        !CheckedSizeMultiply(numCores, perCoreValues, requiredValues) ||
+        !CheckedSizeMultiply(numCores, slotCount_, requiredCounts)) {
+        SPDIAG_LOG_ERROR(LogModule::SDK,
+                         "Top-N snapshot size overflow");
+        return;
+    }
+    try {
+        if (snapshotTopNSize_ != requiredValues ||
+            snapshotTopNCountSize_ != requiredCounts) {
+            std::unique_ptr<uint64_t[]> values(
+                new uint64_t[requiredValues]);
+            std::unique_ptr<uint16_t[]> counts(
+                new uint16_t[requiredCounts]);
+            snapshotTopN_ = std::move(values);
+            snapshotTopNCounts_ = std::move(counts);
+            snapshotTopNSize_ = requiredValues;
+            snapshotTopNCountSize_ = requiredCounts;
+        }
+    } catch (const std::bad_alloc&) {
+        SPDIAG_LOG_ERROR(LogModule::SDK,
+                         "failed to allocate Top-N dump storage");
+        return;
+    }
+
+    // Atomic loads happen before the shared-memory writer window. The
+    // cumulative heap is never cleared, so a concurrent update that lands
+    // after this copy is naturally visible in the next dump.
+    for (uint32_t core = 0; core < numCores; ++core) {
+        shardManager_.SnapshotTopN(
+            snapshotTopN_.get() + static_cast<size_t>(core) * perCoreValues,
+            snapshotTopNCounts_.get() +
+                static_cast<size_t>(core) * slotCount_,
+            srcShards[core]);
+    }
+#endif
 
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -123,22 +188,31 @@ void PerfTimer::DoOneDump() {
         }
     }
 
-    uint32_t numCores = shardManager_.GetNumCores();
-    LocalPerfShard* srcShards = shardManager_.GetShardArray();
+    if (ClearRequested(hdr)) {
+        hdr->dumpSeqNo.fetch_add(1, std::memory_order_release);
+        return;
+    }
+
     uint32_t shmMaxSlots = hdr->maxSlots;
 
     for (uint32_t i = 0; i < numCores; ++i) {
-        LocalPerfShard localSnapshot;
-        shardManager_.SnapshotAndReset(localSnapshot, srcShards[i]);
+        shardManager_.SnapshotStatsAndReset(snapshotStats_.get(),
+                                            srcShards[i]);
+#ifdef SPDIAG_ENABLE_PERCENTILE
+        const size_t countOffset = static_cast<size_t>(i) * slotCount_;
+        for (uint32_t slot = 0; slot < slotCount_; ++slot) {
+            snapshotStats_[slot].topNCount =
+                snapshotTopNCounts_[countOffset + slot];
+        }
+        const uint64_t* topNValues = snapshotTopN_.get() +
+            static_cast<size_t>(i) * perCoreValues;
+#else
+        const uint64_t* topNValues = nullptr;
+#endif
 
         void* shmShardPtr = writer_.ShardPtr(programIndex_, i);
-        size_t shardSize = ShmShardSize(shmMaxSlots);
-        auto mergedBuf = std::make_unique<uint8_t[]>(shardSize);
-        std::memcpy(mergedBuf.get(), shmShardPtr, shardSize);
-
-        MergeShard(mergedBuf.get(), shmMaxSlots, localSnapshot);
-
-        writer_.WriteShard(programIndex_, i, mergedBuf.get(), shardSize);
+        MergeShard(shmShardPtr, shmMaxSlots, snapshotStats_.get(),
+                   topNValues);
     }
 
     // 全局 PerfPoint 累加区快照+合并（仍在 dumpSeqNo 持锁期内）。
@@ -151,9 +225,20 @@ void PerfTimer::DoOneDump() {
     writer_.WriteHeader(*hdr);
 }
 
+bool PerfTimer::ClearRequested(ShmHeader* header) {
+    const uint32_t generation =
+        __atomic_load_n(&header->generation, __ATOMIC_ACQUIRE);
+    if (generation == generation_) {
+        return false;
+    }
+    shardManager_.Clear();
+    generation_ = generation;
+    return true;
+}
+
 void PerfTimer::SnapshotAndMergeGlobal() {
     // 必须在 dumpSeqNo 持锁期内调用（由 DoOneDump 保证），维持单 writer 协议。
-    PerfStat* shmGlobal = writer_.GlobalAccumPtr();
+    GlobalPerfStat* shmGlobal = writer_.GlobalAccumPtr();
     if (shmGlobal == nullptr) {
         return;
     }
@@ -178,7 +263,7 @@ void PerfTimer::SnapshotAndMergeGlobal() {
             continue;
         }
 
-        PerfStat& dst = shmGlobal[g];
+        PerfStat& dst = shmGlobal[g].stat;
         dst.slotIndex      = g;
         dst.backGoodCount += static_cast<uint32_t>(good);
         dst.backBadCount  += static_cast<uint32_t>(bad);
@@ -198,7 +283,8 @@ void PerfTimer::SnapshotAndMergeGlobal() {
         if (tn > 0) {
             uint32_t limit = (tn < maxTopN) ? tn : maxTopN;
             for (uint32_t k = 0; k < limit; ++k) {
-                InsertTopN(dst, a.topN[k]);
+                InsertTopN({shmGlobal[g].topN, &dst.topNCount, maxTopN},
+                           a.topN[k]);
             }
         }
 #endif
@@ -206,12 +292,22 @@ void PerfTimer::SnapshotAndMergeGlobal() {
 }
 
 
-void PerfTimer::MergeShard(void* dst, uint32_t dstMaxSlots, const LocalPerfShard& src) {
+void PerfTimer::MergeShard(
+    void* dst, uint32_t dstMaxSlots, const PerfStat* srcStats,
+    const uint64_t* snapshotTopN) {
+#ifndef SPDIAG_ENABLE_PERCENTILE
+    (void)snapshotTopN;
+#endif
     PerfStat* dstStats = ShmShardStats(dst);
     for (uint32_t j = 0; j < slotCount_; ++j) {
-        const PerfStat& srcStat = src.stats[j];
+        const PerfStat& srcStat = srcStats[j];
+#ifdef SPDIAG_ENABLE_PERCENTILE
+        const bool hasTopN = srcStat.topNCount > 0;
+#else
+        const bool hasTopN = false;
+#endif
         if (srcStat.tickCount == 0 &&
-            srcStat.backNotCount == 0) {
+            srcStat.backNotCount == 0 && !hasTopN) {
             continue;
         }
 
@@ -222,7 +318,9 @@ void PerfTimer::MergeShard(void* dst, uint32_t dstMaxSlots, const LocalPerfShard
 
         PerfStat& dstStat = dstStats[globalIdx];
         dstStat.slotIndex = globalIdx;
-        dstStat.level = srcStat.level;
+        if (srcStat.level != 0) {
+            dstStat.level = srcStat.level;
+        }
         dstStat.backGoodCount += srcStat.backGoodCount;
         dstStat.backBadCount += srcStat.backBadCount;
         dstStat.backNotCount += srcStat.backNotCount;
@@ -238,9 +336,15 @@ void PerfTimer::MergeShard(void* dst, uint32_t dstMaxSlots, const LocalPerfShard
         }
 
 #ifdef SPDIAG_ENABLE_PERCENTILE
-        for (uint8_t t = 0; t < srcStat.topNCount && t < maxTopN; ++t) {
-            InsertTopN(dstStat, srcStat.topN[t]);
-        }
+        const uint32_t capacity = shardManager_.GetPerCoreTopNCapacity();
+        const uint64_t* sourceValues = snapshotTopN +
+            static_cast<size_t>(j) * capacity;
+        const uint32_t sourceCount = std::min<uint32_t>(
+            srcStat.topNCount, capacity);
+        TopNView destination = ShmShardTopN(dst, globalIdx, dstMaxSlots,
+                                            capacity);
+        std::copy_n(sourceValues, sourceCount, destination.values);
+        *destination.count = static_cast<uint16_t>(sourceCount);
 #endif
 #ifdef SPDIAG_ENABLE_PERFLOG
         if (srcStat.perflogWritePos.load(std::memory_order_relaxed) > 0) {
