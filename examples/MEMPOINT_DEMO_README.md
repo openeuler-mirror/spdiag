@@ -4,12 +4,20 @@
 
 ## 快速开始
 
+`build.sh` 只生成 RPM，不生成 demo。先在仓库根目录按[安装指南](../INSTALLATION.md#1-平台与依赖)准备依赖，然后本地构建启用 MemPoint 的示例和 CLI：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_EXAMPLES=ON -DBUILD_TESTS=OFF -DENABLE_MEMPOINT=ON
+cmake --build build --parallel
+```
+
 ```bash
 # 终端1：以 wait 模式启动 demo（打印 PID 后等待）
 ./build/examples/mempoint_demo --wait
 
 # 终端2：运行 mempoint 监控
-sudo spdiag mempoint --pid <PID>
+sudo ./build/src/cli/spdiag mempoint --pid <PID>
 
 # 回到终端1按 Enter 放行
 # 按 Ctrl+C 停止 mempoint 采集
@@ -563,7 +571,7 @@ Options:
 
 ```bash
 ./mempoint_demo --wait
-sudo spdiag mempoint --pid <PID>
+sudo ./build/src/cli/spdiag mempoint --pid <PID>
 # 按 Enter 放行，观察各 Category/Key 行的输出
 ```
 
@@ -571,7 +579,7 @@ sudo spdiag mempoint --pid <PID>
 
 ```bash
 ./mempoint_demo --mode heap_object --count 50 --loop --interval 200
-sudo spdiag mempoint --pid <PID>
+sudo ./build/src/cli/spdiag mempoint --pid <PID>
 # 观察 Execution/Heap_object 行的锯齿形变化
 ```
 
@@ -579,7 +587,7 @@ sudo spdiag mempoint --pid <PID>
 
 ```bash
 ./mempoint_demo --mode leak --count 100 --loop --wait
-sudo spdiag mempoint --pid <PID> --show leaked,current,allocs,frees
+sudo ./build/src/cli/spdiag mempoint --pid <PID> --show leaked,current,allocs,frees
 # Transaction/Leak 行 Frees=0, Current 持续增长
 ```
 
@@ -589,7 +597,7 @@ sudo spdiag mempoint --pid <PID> --show leaked,current,allocs,frees
 # 无 eBPF 附加
 ./mempoint_demo --mode benchmark --iterations 1000000
 # 有 eBPF 附加
-sudo spdiag mempoint --pid <PID>
+sudo ./build/src/cli/spdiag mempoint --pid <PID>
 ./mempoint_demo --mode benchmark --iterations 1000000
 ```
 
@@ -597,7 +605,7 @@ sudo spdiag mempoint --pid <PID>
 
 | 现象 | 可能原因 | 解决方法 |
 |------|---------|---------|
-| "requires SPDIAG_ENABLE_MEMPOINT" | 编译时未启用 MemPoint | `bash build.sh -m on` |
+| "requires SPDIAG_ENABLE_MEMPOINT" | 编译时未启用 MemPoint | `cmake -S . -B build -DENABLE_MEMPOINT=ON -DBUILD_EXAMPLES=ON` 后重新构建 |
 | mempoint 无数据输出 | USDT 探针未激活或 eBPF 未附加 | 确认目标进程运行中，以 root 运行 spdiag |
 | leak 模式无 Leak Detection 区域 | demo 尚未执行到泄漏代码 | 使用 `--wait` 模式 |
 | 所有点位 current = 0 | demo 已运行完毕 | 使用 `--loop` 或 `--wait` 保持活跃 |

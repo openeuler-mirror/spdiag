@@ -13,7 +13,8 @@
 # ProbeDone 2.0 / SHM Watcher 全自动验证 + 代码级状态追踪 + .md 复盘
 #
 # 运行方式：
-#   bash build.sh -s on
+#   cmake -S . -B build -DENABLE_PERFLOG=ON -DBUILD_EXAMPLES=ON
+#   cmake --build build --parallel
 #   chmod +x examples/test_watcher_verify.sh
 #   ./examples/test_watcher_verify.sh
 #
@@ -28,7 +29,7 @@ fail() { echo -e "${RED}[FAIL]${NC} $*"; ((FAIL++)); }
 info() { echo -e "${YELLOW}[INFO]${NC} $*"; }
 
 WATCHER_BIN="${WATCHER_BIN:-./build/examples/test_watcher_auto}"
-SPDIAG_BIN="${SPDIAG_BIN:-spdiag}"
+SPDIAG_BIN="${SPDIAG_BIN:-./build/src/cli/spdiag}"
 REPORT_FILE="watcher_verify_$(date +%Y%m%d_%H%M%S).md"
 
 echo "========================================="

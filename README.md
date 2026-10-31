@@ -15,6 +15,28 @@ SpDiag 已应用于Mooncake、brpc等项目在UB使能过程中的性能诊断�
 
 简单来说：**PerfPoint 定位时间消耗问题，Memstat 与 MemPoint 定位内存泄露与异常分配，Cachestat 分析硬件执行效率。**
 
+## 从源码构建、安装与验证
+
+在 Linux aarch64 上安装[构建依赖](INSTALLATION.md#1-平台与依赖)，并确认已跟踪文件的修改均已提交后，从仓库根目录执行：
+
+```bash
+# 生成 RPM，不安装到系统
+bash build.sh
+
+# 根据构建结束时打印的 RPM output directory 找到产物；仅安装 CLI 和运行库
+sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm
+
+# 安装完成后使用系统命令
+spdiag --version
+spdiag --help
+```
+
+构建成功后会打印 `output/` 的绝对路径，分别列出本次二进制 RPM 和源码 RPM。SDK 开发需要再安装 `spdiag-devel`，静态链接还需要 `spdiag-static`，具体命令见下文“RPM 包说明与按需安装”。源码 RPM 用于重建，不用于安装 CLI。
+
+重新构建相同版本后，用 `dnf reinstall` 显式重装对应二进制包；升级已有安装时先停止采集，并在同一事务中更新所有已安装的 SpDiag 子包，见[升级与重装说明](INSTALLATION.md#35-升级配置文件和卸载)。构建不查询机器已安装的版本，也不自动递增版本号。
+
+`build.sh` 不生成 `build/examples/`。需要示例或本地开发构建时，按[示例说明](examples/README.md)或[本地开发流程](INSTALLATION.md#22-使用-cmake-进行本地开发)使用 CMake。
+
 ## 核心功能
 
 | 功能 | 典型入口 | 目标程序改造 | 运行权限 | 主要构建开关 |
@@ -24,7 +46,7 @@ SpDiag 已应用于Mooncake、brpc等项目在UB使能过程中的性能诊断�
 | MemPoint | `spdiag mempoint --pid <PID>` | 集成 C++ SDK 和 USDT 点位 | 当前建议 root；插件声明 `CAP_SYS_ADMIN` + `CAP_BPF` | `-m on`，`build.sh` 默认关闭 |
 | Cachestat | `spdiag cachestat --pid <PID>` | 无 | 当前建议 root；插件声明 `CAP_PERFMON` | `-k on`，`build.sh` 默认开启 |
 
-PerfLog 使用 `-s on` 构建，分位数使用 `-p on` 构建。详细依赖和全部开关见 [安装指南](INSTALLATION.md#编译选项buildsh)。
+PerfLog 使用 `-s on` 构建，分位数使用 `-p on` 构建。详细依赖和全部开关见 [安装指南](INSTALLATION.md#21-使用-buildsh)。
 
 ### 1. PerfPoint：定位代码路径耗时
 
@@ -40,7 +62,7 @@ PerfPoint 使用编译期定义的点位和共享内存分核写入，热路径�
 sudo yum install spdiag-devel
 ```
 
-如果业务需要静态链接，安装 `spdiag-static`，并在 CMake 中改用 `SpDiag::spdiag_static`。也可以执行 `bash build.sh -r -l on` 从源码安装动态 SDK。业务项目的 CMake 配置如下：
+如果业务需要静态链接，安装 `spdiag-static`，并在 CMake 中改用 `SpDiag::spdiag_static`。从源码构建时执行 `bash build.sh`，在 `output/` 获得 RPM 后按下文安装；脚本不再直接安装到系统。业务项目的 CMake 配置如下：
 
 ```cmake
 find_package(SpDiag CONFIG REQUIRED)
@@ -237,16 +259,16 @@ SpDiag 发布一次会生成三个二进制 RPM 和一个源码 RPM：
 | `spdiag-devel` | SDK 头文件、`libspdiag.so` 链接名和 `SpDiagConfig.cmake` | 编译动态链接 SpDiag 的 PerfPoint/MemPoint 业务程序 |
 | `spdiag-static` | `libspdiag.a`、`libspdiag_logger.a` 和静态 CMake target | 编译静态链接 SpDiag 的 PerfPoint/MemPoint 业务程序 |
 
-包依赖关系为 `spdiag-static -> spdiag-devel -> spdiag`。如果拿到的是本地 RPM 文件，建议使用 `yum install ./xxx.rpm`，让 yum 同时检查系统依赖；安装开发包或静态包时，需要把它依赖的本地 RPM 一并传入。按功能选择如下：
+包依赖关系为 `spdiag-static -> spdiag-devel -> spdiag`。建议使用 `dnf` 或 `yum` 安装本地 RPM，让包管理器同时检查系统依赖；安装开发包或静态包时，需要把它依赖的本地 RPM 一并传入。以下命令从仓库根目录读取 `output/`，无需填写具体版本号；下载到其他目录的 RPM 请使用实际路径。
 
 | 要使用的功能 | 本地 RPM 安装命令 | 说明 |
 | --- | --- | --- |
-| Memstat、Cachestat，或只运行 SpDiag CLI | `sudo yum install ./spdiag-<版本>-<发行号>.aarch64.rpm` | 目标程序无需集成 SDK；按命令要求使用 root 或相应 capability |
-| PerfPoint/PerfLog（编译动态链接业务程序） | `sudo yum install ./spdiag-<版本>-<发行号>.aarch64.rpm ./spdiag-devel-<版本>-<发行号>.aarch64.rpm` | 编译时链接 `SpDiag::spdiag_lib` |
-| PerfPoint/PerfLog（编译静态链接业务程序） | `sudo yum install ./spdiag-<版本>-<发行号>.aarch64.rpm ./spdiag-devel-<版本>-<发行号>.aarch64.rpm ./spdiag-static-<版本>-<发行号>.aarch64.rpm` | 编译时链接 `SpDiag::spdiag_static` |
+| Memstat、Cachestat，或只运行 SpDiag CLI | `sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm` | 目标程序无需集成 SDK；按命令要求使用 root 或相应 capability |
+| PerfPoint/PerfLog（编译动态链接业务程序） | `sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm ./output/spdiag-devel-[0-9]*.aarch64.rpm` | 编译时链接 `SpDiag::spdiag_lib` |
+| PerfPoint/PerfLog（编译静态链接业务程序） | `sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm ./output/spdiag-devel-[0-9]*.aarch64.rpm ./output/spdiag-static-[0-9]*.aarch64.rpm` | 编译时链接 `SpDiag::spdiag_static` |
 | MemPoint | 动态链接安装主包和 `-devel` 包；静态链接再安装 `-static` 包 | RPM 本身必须以 `-m on` 构建；业务程序还需接入 MemPoint SDK/USDT 点位 |
 
-以上命令适用于当前目录中已有 RPM 文件的场景。也可以使用 `sudo rpm -ivh <RPM 文件>`，但 `rpm` 不会自动从软件源解决缺失的系统依赖，因此更推荐使用 yum 安装本地文件。
+`[0-9]*` 避免主包误匹配开发包、静态包和调试包。若 `output/` 留有多个版本或功能组合，按构建结束时列出的本次文件路径选择安装。也可以使用 `sudo rpm -Uvh <RPM 文件>` 安装或升级；相同版本重装使用 `sudo rpm -Uvh --replacepkgs <RPM 文件>`。`rpm` 不会自动从软件源解决缺失依赖，因此推荐使用 `dnf` 或 `yum`。历史 `/usr/local` 源码安装需先按[迁移说明](INSTALLATION.md#37-从历史源码安装迁移)清理。
 
 RPM 发布到已配置的 yum 仓库后，安装方式才简化为直接使用包名，不需要先下载 RPM 文件，也不需要指定版本和发行号。例如：
 

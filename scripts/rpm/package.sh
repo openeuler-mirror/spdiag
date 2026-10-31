@@ -28,7 +28,11 @@ SET_OB_CACHE=0
 usage() {
     cat <<'EOF'
 Usage:
+  bash build.sh [options]
   bash build.sh package [options]
+
+Build binary and source RPMs into output/ without installing to the system.
+The 'package' subcommand is retained as an alias.
 
 Options:
   -p on|off      Enable percentile (P99/P999/P9999) calculation (default: off)
@@ -40,11 +44,14 @@ Options:
 
 Only explicitly supplied options are appended to the RPM Release name.
 Each build produces both the shared-library packages and spdiag-static.
-The package command therefore does not need the build.sh -l option.
+Build type is RelWithDebInfo; unit tests are built and run; examples are disabled.
+Source-build options (-r/-c/-t/-e/-i/-g/-l/-f/-w/-W) are no longer supported.
+Use CMake directly for local development builds (see INSTALLATION.md).
+Packaging requires a clean Git work tree and rpmbuild with its build dependencies.
 Examples:
-  bash build.sh package
-  bash build.sh package -p on -s on
-  bash build.sh package -m on -o off -k off
+  bash build.sh
+  bash build.sh -p on -s on
+  bash build.sh -m on -o off -k off
 EOF
 }
 
@@ -96,6 +103,11 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             usage
             exit 0
+            ;;
+        -r|-c|-t|-e|-i|-g|-l|-f|-w|-W)
+            echo "package.sh: $1 is a source-build option and is no longer supported." >&2
+            echo "build.sh only produces RPMs; use CMake for local development (see INSTALLATION.md)." >&2
+            exit 1
             ;;
         *)
             echo "package.sh: unknown argument: $1" >&2
@@ -222,8 +234,21 @@ if [ "${#SOURCE_RPM_FILES[@]}" -eq 0 ]; then
     exit 1
 fi
 
-echo "RPM package(s) written to:"
 for rpm_file in "${RPM_FILES[@]}" "${SOURCE_RPM_FILES[@]}"; do
     cp -p "$rpm_file" "$OUTPUT_DIR/"
+done
+
+echo ""
+echo "Build completed successfully."
+echo "RPM output directory: $OUTPUT_DIR"
+echo "Binary RPM package(s):"
+for rpm_file in "${RPM_FILES[@]}"; do
     echo "  $OUTPUT_DIR/$(basename "$rpm_file")"
 done
+echo "Source RPM package(s):"
+for rpm_file in "${SOURCE_RPM_FILES[@]}"; do
+    echo "  $OUTPUT_DIR/$(basename "$rpm_file")"
+done
+echo ""
+echo "Install the binary RPMs with dnf/yum before running spdiag."
+echo "Installation and same-version reinstall instructions: $PROJECT_DIR/INSTALLATION.md"

@@ -2,6 +2,8 @@
 
 ## 概述
 
+以下用户命令均使用 RPM 安装后的 `spdiag`。从源码执行 `bash build.sh` 后，根据结束提示中的输出目录和文件列表安装所需二进制 RPM，再运行 `spdiag --version`、`spdiag --help`。构建、安装、升级与相同版本重装见[安装指南](../../INSTALLATION.md#2-从源码构建)。
+
 ```
 spdiag <command> [options]
 ```
@@ -521,9 +523,9 @@ spdiag stop
 PerfLog 需先集成 PerfPoint SDK。编译时加 `-s on`，启动时加 `--perflog`：
 
 ```bash
-# 1. 编译（启用 PerfLog）
+# 1. 构建并安装 RPM（启用 PerfLog）
 bash build.sh -s on
-# 或手动 cmake：cmake .. -DENABLE_PERFLOG=ON
+sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm ./output/spdiag-devel-[0-9]*.aarch64.rpm
 
 # 2. 启动共享内存 + PerfLog
 sudo spdiag start --perflog
@@ -609,13 +611,14 @@ CLI 参数解析和校验逻辑通过 Google Test 覆盖，测试文件位于 `t
 
 ```bash
 # 编译
-bash build.sh
+cmake -S . -B build -DBUILD_TESTS=ON
+cmake --build build --parallel
 
 # 运行全部测试
-cd build && ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 
 # 只运行 CLI 配置相关测试
-ctest --test-dir build -R "CliConfig" --output-on-failure
+ctest --test-dir build -R '^test_cli_config' --output-on-failure
 ```
 
 添加新的 CLI 参数时，应同步在 `test_cli_config.cpp` 中补充：
@@ -625,26 +628,26 @@ ctest --test-dir build -R "CliConfig" --output-on-failure
 
 ### 方法二：人工测试
 
-通过直接运行编译后的二进制进行端到端验证。
+先按方法一使用 CMake 构建，再从仓库根目录直接运行本地 CLI 验证。`build.sh` 的 RPM 构建不生成本地 `build/src/cli/spdiag`。
 
 ```bash
 # 查看帮助信息，确认所有选项正确列出
-./build/spdiag --help
-./build/spdiag --version
+./build/src/cli/spdiag --help
+./build/src/cli/spdiag --version
 
 # 测试参数校验（应报错）
-./build/spdiag start -d                    # "Option not applicable"
-./build/spdiag show --pid 1234             # "Option not applicable"
-./build/spdiag memstat                     # "required for memstat"
-./build/spdiag show --foobar               # "Unknown argument"
+./build/src/cli/spdiag start -d                    # "Option not applicable"
+./build/src/cli/spdiag show --pid 1234             # "Option not applicable"
+./build/src/cli/spdiag memstat                     # "required for memstat"
+./build/src/cli/spdiag show --foobar               # "Unknown argument"
 
 # 测试正常流程（需要共享内存）
-./build/spdiag start
-./build/spdiag show
-./build/spdiag show -d -c 0-3 -l ">=2"
-./build/spdiag stop
+./build/src/cli/spdiag start
+./build/src/cli/spdiag show
+./build/src/cli/spdiag show -d -c 0-3 -l ">=2"
+./build/src/cli/spdiag stop
 
 # 测试 eBPF 观测（需要 root 权限，仅 Linux）
-sudo ./build/spdiag memstat --pid <PID> --bytes --detail
-sudo ./build/spdiag cachestat --pid <PID> --cache-levels L1-dcache,LLC
+sudo ./build/src/cli/spdiag memstat --pid <PID> --bytes --detail
+sudo ./build/src/cli/spdiag cachestat --pid <PID> --cache-levels L1-dcache,LLC
 ```

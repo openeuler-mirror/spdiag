@@ -1,6 +1,6 @@
 # SpDiag 安装与项目集成指南
 
-本文介绍 SpDiag 的依赖、源码安装、RPM 构建与安装，以及第三方 CMake 项目接入 SDK 的完整流程。RPM 章节说明当前打包脚本和 spec 实际生成的产物与使用方式。
+本文介绍 SpDiag 的依赖、RPM 构建与安装、本地开发构建，以及第三方 CMake 项目接入 SDK 的完整流程。系统安装统一通过 RPM 管理。
 
 ## 1. 平台与依赖
 
@@ -29,45 +29,35 @@ sudo dnf install -y \
 
 运行 OB Memstat 或 MemPoint 时，内核需提供 `/sys/kernel/btf/vmlinux`，并需要 root 或相应 BPF/perf capabilities。OB Cachestat 使用 PMU/perf\_event，需要 root、`CAP_PERFMON`，或合适的 `kernel.perf_event_paranoid` 配置。
 
-## 2. 从源码构建和安装
+## 2. 从源码构建
 
 ### 2.1 使用 build.sh
 
 ```bash
-# 默认：clean、Debug、静态 SDK、examples，并安装到 /usr/local
+# 默认生成 RPM 到 output/，不安装到系统
 bash build.sh
 
 # 常用组合
-bash build.sh -r                         # Release
-bash build.sh -r -l on                  # Release 共享库
-bash build.sh -r -t on                  # 构建测试
-bash build.sh -r -i off                 # 只构建，不安装
-bash build.sh -r -p on -s on -m on      # 开启分位数、PerfLog、MemPoint
+bash build.sh -p on -s on -m on       # 开启分位数、PerfLog、MemPoint
+bash build.sh package                 # 兼容原有 RPM 打包入口
+bash build.sh --help
 ```
 
 | 选项           | 含义                      | 默认值   |
 | ------------ | ----------------------- | ----- |
-| `-r`         | Release；不指定时为 Debug     | Debug |
-| `-c on\|off` | 构建前清理 `build/`          | on    |
-| `-t on\|off` | 构建测试                    | off   |
-| `-e on\|off` | 构建 examples             | on    |
-| `-i on\|off` | 安装到系统                   | on    |
-| `-l on\|off` | 共享库 `.so`；off 为静态库 `.a` | off   |
 | `-p on\|off` | P99/P999/P9999          | off   |
 | `-s on\|off` | PerfLog                 | off   |
 | `-m on\|off` | MemPoint                | off   |
 | `-o on\|off` | OB Memstat              | on    |
 | `-k on\|off` | OB Cachestat            | on    |
-| `-g <path>`  | 本地 googletest 源码目录      | —     |
-| `-d LEVEL`   | `DEBUG/INFO/WARN/ERROR` | ERROR |
-| `-w on\|off` | 控制台日志                   | on    |
-| `-W on\|off` | 文件日志                    | off   |
 
-`build.sh` 的默认值与直接运行 CMake 不完全相同：脚本默认关闭测试和 MemPoint；根 `CMakeLists.txt` 默认开启二者。自动化构建应显式传递所需开关。
+`build.sh` 始终以 RelWithDebInfo 构建，执行单元测试，同时生成动态 SDK 和静态 SDK 的 RPM；不构建 examples，也不清理本地 `build/`、运行数据或共享内存。打包条件、产物和安装命令见第 3 节。
 
-构建前若存在 `/dev/shm/spdiag_shm*`，脚本会要求先停止正在运行的 SpDiag，避免新旧共享内存布局不一致。
+构建成功后，终端会显示 `RPM output directory: <仓库绝对路径>/output`，并分别列出二进制 RPM 和源码 RPM 的完整路径。接着按第 3.3 节安装所需的二进制包，再运行 `spdiag --version` 和 `spdiag --help`；仅完成构建不会更新系统中的 `spdiag`。
 
-### 2.2 直接使用 CMake
+原来的 `-r/-c/-t/-e/-i/-g/-l/-f/-w/-W` 源码构建选项已移除，传入会报错。需要 Debug、examples、本地 GTest 或其他 CMake 开关时，使用下面的本地开发流程。
+
+### 2.2 使用 CMake 进行本地开发
 
 ```bash
 cmake -S . -B build \
@@ -77,25 +67,11 @@ cmake -S . -B build \
   -DENABLE_MEMPOINT=OFF \
   -DSPDIAG_BUILD_SHARED=ON
 cmake --build build --parallel
-sudo cmake --install build
 ```
 
-默认安装前缀为 `/usr/local`：
+直接运行 `./build/src/cli/spdiag` 和 `./build/examples/` 中的程序。开发构建留在构建目录；系统安装请先生成 RPM，再交给 `dnf` 管理，避免 `/usr/local` 与 RPM 的 `/usr` 产物并存。
 
-- CLI：`/usr/local/bin/spdiag`
-- 头文件：`/usr/local/include/spdiag/`
-- SDK：`/usr/local/lib/libspdiag.a` 或 `libspdiag.so`
-- CMake 包：`/usr/local/lib/cmake/SpDiag/`
-- 配置文件：通常为 `/usr/local/etc/spdiag/spdiag.conf`
-
-CLI 当前依次查找 `config/spdiag.conf`、当前目录 `spdiag.conf` 和 `/etc/spdiag/spdiag.conf`。若使用默认 `/usr/local` 前缀安装，又希望 CLI 使用系统配置，请执行：
-
-```bash
-sudo install -D -m 0644 /usr/local/etc/spdiag/spdiag.conf \
-  /etc/spdiag/spdiag.conf
-```
-
-未安装时可直接运行 `./build/src/cli/spdiag`。
+根 `CMakeLists.txt` 默认开启测试和 MemPoint，与 RPM 的 MemPoint 默认值不同，应显式传递所需开关。运行本地 CLI 或 SDK 前，先用原版本的 `spdiag stop` 停止旧采集会话，避免新旧共享内存布局不一致。
 
 ## 3. RPM 构建、安装与维护
 
@@ -157,10 +133,10 @@ sudo dnf install -y \
 
 ```bash
 # 查看帮助
-bash build.sh package --help
+bash build.sh --help
 
 # 使用默认功能组合
-bash build.sh package
+bash build.sh
 ```
 
 默认组合：
@@ -177,10 +153,10 @@ bash build.sh package
 
 ```bash
 # 开启分位数和 PerfLog
-bash build.sh package -p on -s on
+bash build.sh -p on -s on
 
 # 开启 MemPoint，关闭两个 OB 观测命令
-bash build.sh package -m on -o off -k off
+bash build.sh -m on -o off -k off
 ```
 
 只有显式传入的开关才会写入 RPM `Release` 后缀。例如 `-p on -s on` 会生成包含 `.p99_on.perflog_on` 的发行号；没有显式传入的默认项不追加后缀。
@@ -199,10 +175,10 @@ bash build.sh package -m on -o off -k off
 任何 CTest 失败都会中止打包。默认 rpmbuild 工作目录是 `$HOME/rpmbuild`，可覆盖：
 
 ```bash
-RPM_TOPDIR=/data/rpmbuild bash build.sh package
+RPM_TOPDIR=/data/rpmbuild bash build.sh
 ```
 
-构建完成后：
+`RPM_TOPDIR` 只改变打包工作目录，交付产物仍然复制到仓库的 `output/`。所有文件复制成功后会打印构建成功提示、`output/` 的绝对路径，以及本次二进制 RPM 和源码 RPM 的文件列表。也可以从仓库根目录查看：
 
 ```bash
 ls -1 output/*.rpm
@@ -282,6 +258,8 @@ spdiag --help
 
 ### 3.5 升级、配置文件和卸载
 
+版本元数据由发布流程维护：`CMakeLists.txt` 和 `spdiag.spec` 的 `Version` 保持一致，发行号保存在 spec 的 `Release` 中。构建脚本只读取、校验打包元数据，不查询机器已安装的版本，也不自动递增版本号或发行号。
+
 升级前先停止采集，并停止仍加载旧共享库的业务程序：
 
 ```bash
@@ -290,6 +268,18 @@ sudo dnf upgrade \
   ./output/spdiag-[0-9]*.aarch64.rpm \
   ./output/spdiag-devel-[0-9]*.aarch64.rpm
 ```
+
+已安装 `spdiag-static` 时，将同一版本的静态包也加入升级事务；三个包有精确版本依赖。若 `output/` 中留有多个版本或功能组合，使用构建结束时打印的本次 RPM 完整路径。
+
+同一 Version/Release 重新构建后，用 `dnf reinstall` 显式重装。下面以仅安装 CLI 和运行库的情况为例；已安装开发包或静态包时，将本次对应包也加入同一命令：
+
+```bash
+spdiag stop
+sudo dnf reinstall ./output/spdiag-[0-9]*.aarch64.rpm
+spdiag --version
+```
+
+切换到较低发行号时使用 `dnf downgrade`。直接使用 RPM 时，安装或升级使用 `rpm -Uvh`，相同版本重装使用 `rpm -Uvh --replacepkgs`。
 
 `/etc/spdiag/spdiag.conf` 以 `%config(noreplace)` 安装。升级不会静默覆盖用户修改；如果新版本带来不同配置，可能生成 `spdiag.conf.rpmnew`，需要人工比较和合并。
 
@@ -306,6 +296,20 @@ rpmbuild --rebuild output/spdiag-*.src.rpm
 ```
 
 重建结果写入当前用户的 `%{_topdir}/RPMS/`。源码 RPM 对应打包时的 Git 提交，不包含当时工作区中的未提交内容。
+
+### 3.7 从历史源码安装迁移
+
+RPM 不会接管历史 `cmake --install` 留在 `/usr/local` 的文件。首次迁移时先用旧 CLI 停止采集，并停止使用旧 SDK 的业务程序，然后检查旧安装记录和命令来源：
+
+```bash
+type -a spdiag
+cat build/install_manifest.txt
+rpm -qf /usr/local/bin/spdiag
+```
+
+安装记录应来自当时执行安装的构建目录。根据记录核对并清理不属于任何 RPM 的旧 CLI、`libspdiag*`、SDK 头文件和 `cmake/SpDiag/`；迁移前备份旧配置，合并到 `/etc/spdiag/spdiag.conf`。不要直接删除整个 `/usr/local`，也不要删除 RPM 管理的文件。清理旧共享库后执行 `sudo ldconfig`，并用 `hash -r` 刷新 shell 命令缓存。
+
+随后按第 3.3 节安装 RPM。通过 `type -a spdiag`、`rpm -qf /usr/bin/spdiag` 和 `spdiag --version` 检查命令来源；业务项目重新配置 CMake，确认 SDK 来自 RPM 的标准安装目录。
 
 ## 4. 在其他项目中使用 SpDiag
 
@@ -362,10 +366,13 @@ ldd ./build/my_service | grep spdiag
 sudo dnf install spdiag-devel
 ```
 
-或从源码安装共享库：
+或从源码生成 RPM，再安装本地动态 SDK 包：
 
 ```bash
-bash build.sh -r -l on
+bash build.sh
+sudo dnf install \
+  ./output/spdiag-[0-9]*.aarch64.rpm \
+  ./output/spdiag-devel-[0-9]*.aarch64.rpm
 ```
 
 #### 业务 CMake

@@ -141,8 +141,8 @@ target_include_directories(test_dump_conflict_reader PRIVATE
 )
 target_link_libraries(test_dump_conflict_reader PRIVATE spdiag_lib)
 
-# user_def_test validates an already installed SDK and is built separately by
-# build.sh after installation. Register it only when that binary exists so
+# user_def_test validates an SDK installed via RPM and is built separately.
+# Register it only when that binary exists so
 # normal CTest/RPM builds remain self-contained.
 set(SPDIAG_USER_DEF_TEST "${CMAKE_SOURCE_DIR}/tests/user_def_test/build/user_def_test")
 if(EXISTS "${SPDIAG_USER_DEF_TEST}")

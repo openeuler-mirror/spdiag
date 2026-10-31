@@ -1,3 +1,15 @@
+# SpDiag 示例程序
+
+`bash build.sh` 生成用于系统安装的 RPM，不构建示例程序。运行本目录中的 demo 前，在仓库根目录按[安装指南](../INSTALLATION.md#1-平台与依赖)准备依赖，并使用 CMake 单独构建：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_EXAMPLES=ON -DBUILD_TESTS=OFF -DENABLE_PERFLOG=ON
+cmake --build build --parallel
+```
+
+本地构建的 CLI 位于 `./build/src/cli/spdiag`，示例位于 `./build/examples/`。下面的示例使用同次本地构建的 CLI；需要系统安装时，另生成并安装 RPM。切换 CLI 或 SDK 前，先用原版本的 `spdiag stop` 停止旧采集会话。
+
 ## csv_export_demo - CSV 导出验证负载
 
 `csv_export_demo` 是供 `scripts/verify_csv_export.sh` 和人工验证使用的轻量负载程序。它持续产生 `Compute.Sort`、`Memory.Alloc`、`IO.IOTask` 三类 PerfPoint，同时制造 CPU、缓存访问和内存分配活动。
@@ -15,10 +27,10 @@ cmake --build build --target csv_export_demo
 ./build/examples/csv_export_demo --duration 0 --threads 4
 
 # 配合 CLI 手工验证
-spdiag start --perflog
+./build/src/cli/spdiag start --perflog
 ./build/examples/csv_export_demo --duration 60 &
-spdiag show --csv ./results
-spdiag show --perflog --csv ./results
+./build/src/cli/spdiag show --csv ./results
+./build/src/cli/spdiag show --perflog --csv ./results
 ```
 
 ***
@@ -87,7 +99,8 @@ MemPoint 点位级内存观测演示程序。演示所有 MemPoint 跟踪模式�
 
 ```bash
 # 编译（需要 Linux + systemtap-sdt-dev）
-bash build.sh -t on -m on
+cmake -S . -B build -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON -DENABLE_MEMPOINT=ON
+cmake --build build --parallel
 
 # 运行所有演示模式
 ./build/examples/mempoint_demo --wait
@@ -109,7 +122,7 @@ bash build.sh -t on -m on
 ./build/examples/mempoint_demo --mode struct_breakdown --wait
 
 # 终端 2：启动 CLI 观测
-spdiag mempoint --pid $(pidof mempoint_demo)
+sudo ./build/src/cli/spdiag mempoint --pid $(pidof mempoint_demo)
 
 # 终端 2 观测到数据后，终端 1 按 Enter 开始
 ```
