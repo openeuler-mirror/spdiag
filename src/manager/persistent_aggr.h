@@ -20,7 +20,8 @@ namespace SpDiag {
 
 class PersistentAggr {
 public:
-    explicit PersistentAggr(const std::string& dataDir);
+    explicit PersistentAggr(const std::string& dataDir,
+                            bool privateStorage = false);
 
     bool Exists() const;
 
@@ -36,6 +37,7 @@ private:
     std::string dataDir_;
     std::string aggrFilePath_;
     std::string snapshotFilePath_;
+    bool privateStorage_ = false;
 
     std::vector<AggregatedStat> LoadSnapshot();
     bool SaveSnapshot(const std::vector<AggregatedStat>& snapshot);

@@ -25,7 +25,6 @@ namespace SpDiag {
 namespace {
 constexpr uint64_t fnvOffset = 14695981039346656037ULL;
 constexpr uint64_t fnvPrime = 1099511628211ULL;
-
 uint64_t StableHash(const std::string& value) {
     uint64_t hash = fnvOffset;
     for (unsigned char ch : value) {
@@ -64,12 +63,26 @@ std::optional<FileLockGuard> FileLockGuard::AcquireFor(
         *errorCode = 0;
     }
 
-    int fd = shm_open(lockName.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-    if (fd < 0) {
-        if (errorCode != nullptr) {
-            *errorCode = errno;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    int fd = -1;
+    while (fd < 0) {
+        fd = shm_open(lockName.c_str(), O_RDWR | O_CLOEXEC, 0);
+        int openError = errno;
+        if (fd < 0 && openError == ENOENT) {
+            fd = shm_open(lockName.c_str(),
+                          O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+            openError = errno;
         }
-        return std::nullopt;
+        if (fd < 0 && openError == EEXIST)
+            fd = shm_open(lockName.c_str(), O_RDWR | O_CLOEXEC, 0);
+        if (fd >= 0) break;
+        if ((openError != EACCES && openError != EEXIST) ||
+            timeout.count() == 0 ||
+            std::chrono::steady_clock::now() >= deadline) {
+            if (errorCode != nullptr) *errorCode = openError;
+            return std::nullopt;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     if (fchmod(fd, 0666) != 0 && errno != EPERM) {
         const int chmodError = errno;
@@ -85,7 +98,6 @@ std::optional<FileLockGuard> FileLockGuard::AcquireFor(
     lock.l_start = 0;
     lock.l_len = 1;
 
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (fcntl(fd, F_OFD_SETLK, &lock) != 0) {
         const int lockError = errno;
         if (lockError != EAGAIN && lockError != EACCES) {
@@ -112,6 +124,16 @@ std::string MakeLockName(const char* domain, const std::string& key) {
     char name[96];
     std::snprintf(name, sizeof(name), "/spdiag_lock_%s_%016llx", domain,
                   static_cast<unsigned long long>(StableHash(key)));
+    return name;
+}
+
+std::string MakeBoundedLockName(const char* domain, const std::string& key,
+                                uint64_t bucketCount) {
+    if (bucketCount == 0) return MakeLockName(domain, key);
+    char name[96];
+    std::snprintf(name, sizeof(name), "/spdiag_lock_%s_bucket_%04llx", domain,
+                  static_cast<unsigned long long>(
+                      StableHash(key) % bucketCount));
     return name;
 }
 

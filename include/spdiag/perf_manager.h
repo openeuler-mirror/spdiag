@@ -101,7 +101,7 @@ private:
     std::unique_ptr<ShmWriter> shmWriter_;
     std::unique_ptr<PerfTimer> timer_;
 
-    std::string shmName_ = "/spdiag_shm_default";
+    std::string shmName_ = defaultShmName;
     std::string defFilePath_;
     std::vector<std::string> keyModuleNames_;
     std::vector<std::string> keyPointNames_;

@@ -49,7 +49,8 @@ struct DumpRecord {
 
 class DumpRecorder {
 public:
-    explicit DumpRecorder(uint32_t capacity = 30);
+    explicit DumpRecorder(uint32_t capacity = 30,
+                          bool privateStorage = false);
 
     void Record(const DumpRecord& record);
 
@@ -67,6 +68,7 @@ private:
     uint32_t count_ = 0;
     uint32_t head_ = 0;
     std::vector<DumpRecord> records_;
+    bool privateStorage_ = false;
 
     size_t PhysicalIndex(size_t logicalIndex) const;
 };

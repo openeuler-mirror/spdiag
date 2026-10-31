@@ -1,10 +1,15 @@
 [shm]
+# Override per process with SPDIAG_SHM_PATH or CLI --shm-path.
+# Accepted forms: NAME, /NAME, /dev/shm/NAME.
 name = /spdiag_shm_default
 
 [general]
 version = 1
 
-# Data directory for persistent files (history.bin, aggr.bin, snapshot.bin)
+# Base directory for persistent files (history.bin, aggr.bin, snapshot.bin).
+# Custom SHM namespaces use <base>-uid-<UID>/<NAME>/ with 0700 directories
+# and 0600 files. start reserves the complete SHM backing store and fails
+# early when /dev/shm capacity is insufficient.
 data_dir = /tmp/spdiag_data
 
 # History ring buffer capacity

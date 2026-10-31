@@ -11,13 +11,15 @@
  */
 
 #include "dump_recorder.h"
+#include "private_storage.h"
+#include "spdiag/log_macros.h"
 #include <stdexcept>
 #include <algorithm>
 
 namespace SpDiag {
 
-DumpRecorder::DumpRecorder(uint32_t capacity)
-    : capacity_(capacity) {
+DumpRecorder::DumpRecorder(uint32_t capacity, bool privateStorage)
+    : capacity_(capacity), privateStorage_(privateStorage) {
     records_.resize(capacity);
 }
 
@@ -41,8 +43,17 @@ const DumpRecord& DumpRecorder::GetRecord(size_t index) const {
 }
 
 bool DumpRecorder::SaveToFile(const std::string& filePath) const {
+    std::string storageError;
+    if (privateStorage_ && !PreparePrivateFile(filePath, &storageError)) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER, "%s", storageError.c_str());
+        return false;
+    }
     std::ofstream ofs(filePath, std::ios::binary);
     if (!ofs) return false;
+    if (privateStorage_ && !RestrictPrivateFile(filePath, &storageError)) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER, "%s", storageError.c_str());
+        return false;
+    }
 
     const uint32_t magic = 0x48495354;
     const uint32_t version = 1;
@@ -133,6 +144,7 @@ bool DumpRecorder::SaveToFile(const std::string& filePath) const {
 }
 
 bool DumpRecorder::LoadFromFile(const std::string& filePath) {
+    if (privateStorage_ && !ValidatePrivateFile(filePath)) return false;
     std::ifstream ifs(filePath, std::ios::binary);
     if (!ifs) return false;
 

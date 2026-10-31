@@ -16,6 +16,7 @@
 #include <initializer_list>
 #include <vector>
 #include "spdiag/shm_layout.h"
+#include "spdiag/shm_path.h"
 
 namespace SpDiag {
 
@@ -97,7 +98,9 @@ struct CategoryRule {
 
 struct CliConfig {
     Command     command         = Command::SHOW;
-    std::string shmName         = "/spdiag_shm_default";
+    std::string shmName         = defaultShmName;
+    bool        shmExportSyntax = false;
+    bool        forceRemoveShm  = false;
     uint32_t    expectedVersion = 1;
     std::string configPath;
     std::string configError;
