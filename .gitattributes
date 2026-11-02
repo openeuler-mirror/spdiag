@@ -38,3 +38,6 @@ build.sh       text eol=lf
 *.xlsx         binary
 *.tar.gz       binary
 *.patch        binary
+
+# Git archives carry their source identity without requiring .git.
+cmake/source_revision.txt text eol=lf export-subst

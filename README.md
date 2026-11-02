@@ -17,23 +17,23 @@ SpDiag 已应用于Mooncake、brpc等项目在UB使能过程中的性能诊断�
 
 ## 从源码构建、安装与验证
 
-在 Linux aarch64 上安装[构建依赖](INSTALLATION.md#1-平台与依赖)，并确认已跟踪文件的修改均已提交后，从仓库根目录执行：
+在 Linux aarch64 上安装[构建依赖](INSTALLATION.md#1-平台与依赖)，准备好干净的 Git 工作树或正式源码归档后，从源码根目录执行：
 
 ```bash
 # 生成 RPM，不安装到系统
 bash build.sh
 
 # 根据构建结束时打印的 RPM output directory 找到产物；仅安装 CLI 和运行库
-sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Install/upgrade (CLI/runtime) 后的完整命令并执行
 
 # 安装完成后使用系统命令
 spdiag --version
 spdiag --help
 ```
 
-构建成功后会打印 `output/` 的绝对路径和本次 RPM 文件列表，并按“CLI/runtime（仅 CLI 和运行库）”“dynamic SDK（动态 SDK）”“static SDK（静态 SDK）”分别给出可直接复制的 `sudo dnf install` 和 `sudo dnf reinstall` 命令。选择一种用途和一种操作执行即可；这些命令使用本次文件的完整路径，路径中的空格和引号也已转义。源码 RPM 用于重建，不会加入安装命令。
+构建成功后会打印 `output/<构建ID>/` 的绝对路径和本次 RPM 文件列表，并按“CLI/runtime（仅 CLI 和运行库）”“dynamic SDK（动态 SDK）”“static SDK（静态 SDK）”分别给出可直接复制的 `sudo dnf install` 和 `sudo dnf reinstall` 命令。选择一种用途和一种操作执行即可；这些命令使用本次文件的完整路径，路径中的空格和引号也已转义。源码 RPM 用于重建，不会加入安装命令。
 
-首次安装或升级选择 `dnf install`；相同 Version/Release 的包已安装时，选择 `dnf reinstall` 显式覆盖重装。替换已有安装前先执行 `spdiag stop`，并停止使用旧 SDK 的业务程序；所有已安装的 SpDiag 子包应使用同次构建的包，见[升级与重装说明](INSTALLATION.md#35-升级配置文件和卸载)。构建不查询机器已安装的版本，也不自动递增版本号。
+首次安装或升级选择 `dnf install`；相同 Version/Release 的包已安装时，选择 `dnf reinstall` 显式覆盖重装。替换已有安装前先执行 `spdiag stop`，并停止使用旧 SDK 的业务程序；所有已安装的 SpDiag 子包应使用同次构建的包，见[升级与重装说明](INSTALLATION.md#35-升级配置文件和卸载)。构建不查询机器已安装的版本，也不自动递增版本号。完整提交 SHA 随源码归档保存，`spdiag --version` 显示构建来源；提交 SHA 不会写入 Release。
 
 `build.sh` 不生成 `build/examples/`。需要示例或本地开发构建时，按[示例说明](examples/README.md)或[本地开发流程](INSTALLATION.md#22-使用-cmake-进行本地开发)使用 CMake。
 
@@ -62,7 +62,7 @@ PerfPoint 使用编译期定义的点位和共享内存分核写入，热路径�
 sudo yum install spdiag-devel
 ```
 
-如果业务需要静态链接，安装 `spdiag-static`，并在 CMake 中改用 `SpDiag::spdiag_static`。从源码构建时执行 `bash build.sh`，在 `output/` 获得 RPM 后按下文安装；脚本不再直接安装到系统。业务项目的 CMake 配置如下：
+如果业务需要静态链接，安装 `spdiag-static`，并在 CMake 中改用 `SpDiag::spdiag_static`。从源码构建时执行 `bash build.sh`，在 `output/<构建ID>/` 获得 RPM 后按下文安装；脚本不再直接安装到系统。业务项目的 CMake 配置如下：
 
 ```cmake
 find_package(SpDiag CONFIG REQUIRED)
@@ -259,25 +259,24 @@ SpDiag 发布一次会生成三个二进制 RPM 和一个源码 RPM：
 | `spdiag-devel` | SDK 头文件、`libspdiag.so` 链接名和 `SpDiagConfig.cmake` | 编译动态链接 SpDiag 的 PerfPoint/MemPoint 业务程序 |
 | `spdiag-static` | `libspdiag.a`、`libspdiag_logger.a` 和静态 CMake target | 编译静态链接 SpDiag 的 PerfPoint/MemPoint 业务程序 |
 
-包依赖关系为 `spdiag-static -> spdiag-devel -> spdiag`。建议使用 `dnf` 或 `yum` 安装本地 RPM，让包管理器同时检查系统依赖；安装开发包或静态包时，需要把它依赖的本地 RPM 一并传入。以下命令从仓库根目录读取 `output/`，无需填写具体版本号；下载到其他目录的 RPM 请使用实际路径。
+包依赖关系为 `spdiag-static -> spdiag-devel -> spdiag`。建议使用 `dnf` 或 `yum` 安装本地 RPM，让包管理器同时检查系统依赖；安装开发包或静态包时，需要把它依赖的本地 RPM 一并传入。每次构建成功后都会发布独立的 `output/<构建ID>/`，并打印具体安装命令；无需填写版本号，也不需要通配选择 RPM。
 
 | 要使用的功能 | 本地 RPM 安装命令 | 说明 |
 | --- | --- | --- |
-| Memstat、Cachestat，或只运行 SpDiag CLI | `sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm` | 目标程序无需集成 SDK；按命令要求使用 root 或相应 capability |
-| PerfPoint/PerfLog（编译动态链接业务程序） | `sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm ./output/spdiag-devel-[0-9]*.aarch64.rpm` | 编译时链接 `SpDiag::spdiag_lib` |
-| PerfPoint/PerfLog（编译静态链接业务程序） | `sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm ./output/spdiag-devel-[0-9]*.aarch64.rpm ./output/spdiag-static-[0-9]*.aarch64.rpm` | 编译时链接 `SpDiag::spdiag_static` |
+| Memstat、Cachestat，或只运行 SpDiag CLI | 复制本次构建输出中 `Install/upgrade (CLI/runtime)` 后的完整命令并执行 | 目标程序无需集成 SDK；按命令要求使用 root 或相应 capability |
+| PerfPoint/PerfLog（编译动态链接业务程序） | 复制本次构建输出中 `Install/upgrade (dynamic SDK)` 后的完整命令并执行 | 编译时链接 `SpDiag::spdiag_lib` |
+| PerfPoint/PerfLog（编译静态链接业务程序） | 复制本次构建输出中 `Install/upgrade (static SDK)` 后的完整命令并执行 | 编译时链接 `SpDiag::spdiag_static` |
 | MemPoint | 动态链接安装主包和 `-devel` 包；静态链接再安装 `-static` 包 | RPM 本身必须以 `-m on` 构建；业务程序还需接入 MemPoint SDK/USDT 点位 |
 
 同版本覆盖重装使用相同的包集合，将命令中的 `install` 换成 `reinstall`。例如覆盖动态 SDK：
 
 ```bash
-sudo dnf reinstall ./output/spdiag-[0-9]*.aarch64.rpm \
-  ./output/spdiag-devel-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Reinstall the same version (dynamic SDK, already installed) 后的完整命令并执行
 ```
 
 静态 SDK 的安装或重装均应包含主包、开发包和静态包；仅安装主包的场景使用仅 CLI 的命令。
 
-`[0-9]*` 避免主包误匹配开发包、静态包和调试包。若 `output/` 留有多个版本或功能组合，按构建结束时列出的本次文件路径选择安装。也可以使用 `sudo rpm -Uvh <RPM 文件>` 安装或升级；相同版本重装使用 `sudo rpm -Uvh --replacepkgs <RPM 文件>`。`rpm` 不会自动从软件源解决缺失依赖，因此推荐使用 `dnf` 或 `yum`。历史 `/usr/local` 源码安装需先按[迁移说明](INSTALLATION.md#37-从历史源码安装迁移)清理。
+安装时只复制本次输出的完整命令；历史构建保存在各自目录中，不参与本次安装。也可以使用 `sudo rpm -Uvh <RPM 文件>` 安装或升级；相同版本重装使用 `sudo rpm -Uvh --replacepkgs <RPM 文件>`。`rpm` 不会自动从软件源解决缺失依赖，因此推荐使用 `dnf` 或 `yum`。历史 `/usr/local` 源码安装需先按[迁移说明](INSTALLATION.md#37-从历史源码安装迁移)清理。
 
 RPM 发布到已配置的 yum 仓库后，安装方式才简化为直接使用包名，不需要先下载 RPM 文件，也不需要指定版本和发行号。例如：
 

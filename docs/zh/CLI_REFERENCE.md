@@ -525,7 +525,7 @@ PerfLog 需先集成 PerfPoint SDK。编译时加 `-s on`，启动时加 `--perf
 ```bash
 # 1. 构建并安装 RPM（启用 PerfLog）
 bash build.sh -s on
-sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm ./output/spdiag-devel-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
 
 # 2. 启动共享内存 + PerfLog
 sudo spdiag start --perflog

@@ -4,16 +4,14 @@
 
 ## 构建、安装与首次使用
 
-在 Linux aarch64 上准备好[构建依赖](INSTALLATION.md#1-平台与依赖)，并提交已跟踪文件的修改后，从 SpDiag 仓库根目录执行：
+在 Linux aarch64 上准备好[构建依赖](INSTALLATION.md#1-平台与依赖)，从干净的 Git 工作树或带提交元数据的正式源码归档根目录执行：
 
 ```bash
 # 构建 RPM；功能开关按需追加，如 -s on、-p on、-m on
 bash build.sh
 
 # 根据构建结束时打印的 RPM output directory 找到产物，安装 CLI 和动态 SDK
-sudo dnf install \
-  ./output/spdiag-[0-9]*.aarch64.rpm \
-  ./output/spdiag-devel-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
 
 spdiag --version
 spdiag --help
@@ -329,9 +327,7 @@ PerfLog 需先集成 PerfPoint SDK。启用仅需修改编译和启动参数：
 ```bash
 # 1. 从 SpDiag 仓库构建并安装启用 PerfLog 的 RPM
 bash build.sh -s on
-sudo dnf install \
-  ./output/spdiag-[0-9]*.aarch64.rpm \
-  ./output/spdiag-devel-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
 ```
 
 安装后，按 PerfPoint 的“第4步”重新编译已集成 SDK 的业务程序，再执行以下操作。仓库中的 `demo_app` 需要单独按[示例说明](examples/README.md)构建。
@@ -405,7 +401,7 @@ sudo dnf install -y cmake gcc-c++ clang libbpf-devel bpftool libelf-devel zlib-d
 
 ```bash
 bash build.sh
-sudo dnf install ./output/spdiag-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Install/upgrade (CLI/runtime) 后的完整命令并执行
 ```
 
 > OB 功能与 SHM 打点功能是独立的，**不需要**先执行 `spdiag start`。

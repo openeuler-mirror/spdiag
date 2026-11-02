@@ -91,13 +91,17 @@ ctest --test-dir build --output-on-failure
 
 因此 `bash build.sh`（兼容别名 `bash build.sh package`）也会运行仓库内自包含测试；任一测试失败都会终止 RPM 构建。spec 声明 `gtest-devel` 和 `kernel-headers` 为构建依赖。随后单独配置 `build-static`，只构建静态 SDK，不重复执行测试。
 
-成功后终端打印 `RPM output directory` 和本次 RPM 完整路径。RPM 构建目录位于打包工作目录中，不会生成仓库本地的 `build/tests/`；需要手动运行上文的测试二进制时，先用 CMake 完成本地开发构建。
+成功后终端打印独立的 `output/<构建ID>/` 和完整安装命令。RPM 工作目录每次独立创建并自动清理；需要手动运行测试二进制时，使用上文的本地 CMake 构建。
 
-RPM 入口的隔离回归检查不需要 aarch64 或 `rpmbuild`，使用真实 Git 归档和模拟打包命令验证默认入口、兼容入口、功能开关及错误参数。测试会把结束提示中的六条安装/重装命令交给参数记录器执行，检查含空格、引号的路径以及三种包集合，并确认不会误选历史包、源码包或调试包；不会安装系统文件：
+`test_build_rpm` 已注册到 CTest，RPM 的 `%check` 也会运行。它不需要 aarch64 或真实 `rpmbuild`，使用 Git 归档和模拟打包命令验证来源 SHA、无 Git 源码重打包、并发隔离、失败不发布，以及六条安装/重装命令的路径和包集合；不会安装系统文件。也可以单独运行：
 
 ```bash
 bash tests/test_build_rpm.sh
 ```
+
+`test_install_consumer` 也已注册到 CTest：先用 `DESTDIR` 安装到测试私有目录，再仅从该目录 `find_package(SpDiag)`，编译并链接包含 `spdiag/perf.h` 的消费者，覆盖 `perf_point.def` 等公开文件及 SDK 导出依赖。共享构建验证共享 target，静态构建验证静态 target。
+
+RPM `%check` 还会针对实际 `%{buildroot}` 中动态和静态 SDK 的共同安装，分别编译、链接两个消费者。以上检查不执行消费者程序，交叉编译环境也能验证安装内容和链接闭包；硬件运行验证仍需目标平台。
 
 ## 测试文件清单
 

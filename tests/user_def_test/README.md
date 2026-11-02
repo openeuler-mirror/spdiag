@@ -171,9 +171,7 @@ bash tests/user_def_test/build_and_run.sh disabled
 ```bash
 cd /path/to/spdiag
 bash build.sh
-sudo dnf install \
-  ./output/spdiag-[0-9]*.aarch64.rpm \
-  ./output/spdiag-devel-[0-9]*.aarch64.rpm
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
 ```
 
 ### Step 2：编译用户测试项目
