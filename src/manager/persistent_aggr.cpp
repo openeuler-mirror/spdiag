@@ -217,6 +217,12 @@ bool PersistentAggr::SaveSnapshot(const std::vector<AggregatedStat>& snapshot) {
     return SaveDataFile(snapshotFilePath_, SNAPSHOT_MAGIC, snapshot);
 }
 
+bool PersistentAggr::ResetSnapshot() {
+    std::error_code error;
+    std::filesystem::remove(snapshotFilePath_, error);
+    return !error;
+}
+
 std::vector<AggregatedStat> PersistentAggr::LoadSnapshot() {
     return LoadDataFile(snapshotFilePath_, SNAPSHOT_MAGIC);
 }
