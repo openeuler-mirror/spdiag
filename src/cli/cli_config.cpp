@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <limits>
+#include <unistd.h>
 
 namespace {
 
@@ -165,6 +166,15 @@ std::string ValidateCommandOptions(const CliConfig& cfg) {
         return "per_core_top_n is unavailable in a build without percentile support";
     }
 #endif
+
+    if (cfg.forceRemoveShm) {
+        if (cfg.command != Command::STOP && cfg.command != Command::RESTART) {
+            return "--force-remove is only valid for stop or restart";
+        }
+        if (cfg.shmName == SpDiag::defaultShmName) {
+            return "--force-remove requires a custom SHM namespace";
+        }
+    }
 
     return {};
 }
@@ -425,6 +435,11 @@ GlobalScanResult ScanGlobalOptions(int argc, char* argv[], CliConfig& cfg) {
         }
     }
 
+    const char* shmPath = std::getenv(SpDiag::shmPathEnvironment);
+    if (shmPath != nullptr && shmPath[0] != '\0') {
+        cfg.shmName = shmPath;
+    }
+
     return result;
 }
 
@@ -463,6 +478,11 @@ static void PrintUsage() {
         "  --version              Show version\n"
         "  --log-level LEVEL      Set runtime log level (DEBUG/INFO/WARN/ERROR)\n"
         "                        Default: ERROR\n"
+        "  --shm-path PATH        Select one SHM namespace for this command\n"
+        "  --export SPDIAG_SHM_PATH=PATH\n"
+        "                        Alias for --shm-path in this command only\n"
+        "  --force-remove        Remove an unrecognized custom SHM during\n"
+        "                        stop/restart (explicit recovery only)\n"
         "\n"
         "Commands:\n"
         "  start          Create shared memory for spdiag\n"
@@ -567,6 +587,35 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
             return MakeError("Error: --config option is temporarily disabled");
         } else if (arg == "--shm") {
             return MakeError("Error: --shm option is temporarily disabled");
+        } else if (arg == "--shm-path") {
+            if (i + 1 >= argc) {
+                return MakeError("Invalid value for --shm-path: missing value");
+            }
+            cfg.shmName = argv[++i];
+            if (cfg.shmName.empty()) {
+                return MakeError("Invalid value for --shm-path: empty value");
+            }
+        } else if (arg.rfind("--shm-path=", 0) == 0) {
+            cfg.shmName = arg.substr(11);
+            if (cfg.shmName.empty()) {
+                return MakeError("Invalid value for --shm-path: empty value");
+            }
+        } else if (arg == "--export") {
+            if (i + 1 >= argc) {
+                return MakeError("Invalid --export: missing SPDIAG_SHM_PATH assignment");
+            }
+            const std::string assignment = argv[++i];
+            const std::string prefix =
+                std::string(SpDiag::shmPathEnvironment) + "=";
+            if (assignment.rfind(prefix, 0) != 0 ||
+                assignment.size() == prefix.size()) {
+                return MakeError(
+                    "Invalid --export: expected SPDIAG_SHM_PATH=PATH");
+            }
+            cfg.shmName = assignment.substr(prefix.size());
+            cfg.shmExportSyntax = true;
+        } else if (arg == "--force-remove") {
+            cfg.forceRemoveShm = true;
         } else if (arg == "--version") {
             result.versionRequested = true;
             return result;
@@ -831,6 +880,15 @@ ParseResult ParseArgsInternal(int argc, char* argv[]) {
         }
         ++i;
     }
+
+    std::string normalizedShm;
+    std::string shmError;
+    if (!SpDiag::NormalizeShmPath(cfg.shmName, normalizedShm, shmError)) {
+        return MakeError("Invalid SHM path: " + shmError);
+    }
+    cfg.shmName = std::move(normalizedShm);
+    cfg.dataDir = SpDiag::ShmScopedDataDir(
+        cfg.dataDir, cfg.shmName, static_cast<uint32_t>(geteuid()));
 
     // Phase 3: cross-validation
     std::string validationError = ValidateCommandOptions(cfg);

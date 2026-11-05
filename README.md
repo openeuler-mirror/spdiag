@@ -101,6 +101,55 @@ spdiag stop                          # 结束采集并销毁共享内存
 
 业务程序未执行 `spdiag start` 时仍能正常运行，只是不产生可展示的数据。默认共享内存支持业务先启动、之后执行 `spdiag start` 自动重连。
 
+同一节点运行多个相互隔离的 SpDiag 实例时，每个用户必须选择不同 namespace，并让
+SpDiag CLI 与对应业务进程继承同一个 `SPDIAG_SHM_PATH`。例如：
+
+```bash
+# 用户 A
+export SPDIAG_SHM_PATH=/dev/shm/spdiag_user_a
+spdiag start
+./build/mooncake_service
+spdiag show
+spdiag stop
+```
+
+```bash
+# 用户 B
+export SPDIAG_SHM_PATH=/dev/shm/spdiag_user_b
+spdiag start
+./build/mooncake_service
+spdiag show
+spdiag stop
+```
+
+两组 SHM、打点、show/watch/clear、历史文件和 stop/restart 相互独立。custom SHM 使用
+`0600` 权限，因此每组 CLI 与业务必须使用同一 UID；每个业务进程连接一个 namespace。
+custom 持久化目录使用 `0700`、文件使用 `0600`。`spdiag start` 会真实预留 SHM backing
+storage，容量不足时直接失败，不把风险推迟到业务写页阶段。
+
+> **注意：** 只执行 `spdiag start --shm-path /dev/shm/spdiag_user_a` 只能让这一次 CLI
+> 选择 custom SHM。如果随后启动 Mooncake 时没有设置相同的 `SPDIAG_SHM_PATH`，业务仍会
+> 连接默认 SHM。兼容写法 `spdiag start --export SPDIAG_SHM_PATH=...` 同样无法修改父
+> shell；启动业务前必须执行真正的 shell `export`。
+
+CLI 单次查询或清理可以使用 `--shm-path /dev/shm/NAME`。异常退出后使用同一环境变量或
+显式路径执行 `spdiag status/stop`，不会扫描或删除其他用户的 SHM。默认历史目录使用
+`/tmp/spdiag_data-uid-<UID>/<NAME>/`，不同 UID 不共享父目录所有权。
+
+默认 namespace 不需要设置环境变量，继续直接使用 `spdiag stop` 和 `spdiag restart`。
+
+custom SHM 能确认是 SpDiag 对象时，`stop/restart` 正常自动处理。如果 header 已损坏、
+无法确认归属，命令会拒绝删除并打印恢复提示；用户确认路径确实属于 SpDiag 后再显式执行：
+
+```bash
+export SPDIAG_SHM_PATH=/dev/shm/spdiag_user_a
+spdiag stop --force-remove
+# 或修复性重建
+spdiag restart --force-remove
+```
+
+不要直接按进程名批量清理，也不要对未确认归属的 `/dev/shm` 对象使用强制选项。
+
 当汇总统计不足以解释单次抖动时，可以启用 **PerfLog**，查看探针最近调用的时间、线程和单次耗时。异步流程还可以使用 **Global PerfPoint** 在不同线程中执行 `Start` 和 `End`。完整接入方式见 [QuickStart](QuickStart.md#功能一perfpoint-打点计时)，性能测试方法见 [Benchmark 指南](examples/BENCHMARK_README.md)。
 
 #### 预期输出

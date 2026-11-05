@@ -11,6 +11,8 @@
  */
 
 #include <gtest/gtest.h>
+#include <cstdlib>
+#include <unistd.h>
 #include "src/cli/cli_config.h"
 #include "src/cli/sort_spec.h"
 #include "src/cli/glob_match.h"
@@ -75,6 +77,45 @@ TEST(CliConfigTest, ParseWatch) {
 TEST(CliConfigTest, ParseStart) {
     auto config = Parse({"start"});
     EXPECT_EQ(config.command, Command::START);
+}
+
+TEST(CliConfigTest, ShmPathEnvironmentAndCliPrecedence) {
+    const char* previous = std::getenv(shmPathEnvironment);
+    const std::string saved = previous == nullptr ? "" : previous;
+    setenv(shmPathEnvironment, "/dev/shm/from-env", 1);
+    auto fromEnv = Parse({"show"});
+    EXPECT_EQ(fromEnv.shmName, "/from-env");
+    EXPECT_EQ(fromEnv.dataDir,
+              "/tmp/spdiag_data-uid-" + std::to_string(geteuid()) +
+              "/from-env");
+    auto explicitPath = Parse({"show", "--shm-path", "/dev/shm/from-cli"});
+    EXPECT_EQ(explicitPath.shmName, "/from-cli");
+    if (previous == nullptr) unsetenv(shmPathEnvironment);
+    else setenv(shmPathEnvironment, saved.c_str(), 1);
+}
+
+TEST(CliConfigTest, ExportSyntaxSelectsCurrentCommandOnly) {
+    auto config = Parse({"start", "--export",
+                         "SPDIAG_SHM_PATH=/dev/shm/from-export"});
+    EXPECT_EQ(config.shmName, "/from-export");
+    EXPECT_TRUE(config.shmExportSyntax);
+}
+
+TEST(CliConfigTest, ForceRemoveRequiresCustomStopOrRestart) {
+    auto stop = Parse({"stop", "--shm-path", "/dev/shm/damaged",
+                       "--force-remove"});
+    EXPECT_TRUE(stop.forceRemoveShm);
+
+    auto defaultStop = ParseInternal({"stop", "--force-remove"});
+    EXPECT_FALSE(defaultStop.error.empty());
+    auto show = ParseInternal({"show", "--shm-path", "/damaged",
+                               "--force-remove"});
+    EXPECT_FALSE(show.error.empty());
+}
+
+TEST(CliConfigTest, RejectsNestedShmPath) {
+    auto result = ParseInternal({"start", "--shm-path", "/dev/shm/a/b"});
+    EXPECT_FALSE(result.error.empty());
 }
 
 TEST(CliConfigTest, ParseStop) {

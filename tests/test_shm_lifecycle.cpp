@@ -112,13 +112,14 @@ protected:
     void TearDown() override {
         SpDiag::Platform::ShmDestroy(kLifecycleShm);
         const auto config = MakeConfig();
-        shm_unlink(SpDiag::MakeLockName("lifecycle", config.shmName).c_str());
+        shm_unlink(SpDiag::MakeBoundedLockName(
+            "lifecycle_custom", config.shmName, 256).c_str());
     }
 };
 
 int ExerciseOwnerModeZeroRecovery(bool restart) {
     SpDiag::SpDiagManager manager;
-    const auto config = MakeConfig();
+    auto config = MakeConfig();
     if (!manager.StartShm(config)) {
         return 10;
     }
@@ -131,6 +132,7 @@ int ExerciseOwnerModeZeroRecovery(bool restart) {
     if (chmodResult != 0) {
         return 12;
     }
+    config.forceRemoveShm = true;
 
     if (restart) {
         if (!manager.RestartShm(config) ||
@@ -206,7 +208,8 @@ TEST_F(ShmLifecycleTest, StartRejectsIncompatibleShmWithoutMutation) {
 
 TEST_F(ShmLifecycleTest, RestartRepairsCorruptedShmAfterBusinessStops) {
     SpDiag::SpDiagManager manager;
-    ASSERT_TRUE(manager.StartShm(MakeConfig()));
+    auto config = MakeConfig();
+    ASSERT_TRUE(manager.StartShm(config));
     const auto probe = SpDiag::ProbeShmHeader(kLifecycleShm);
     ASSERT_TRUE(probe.valid);
 
@@ -219,7 +222,9 @@ TEST_F(ShmLifecycleTest, RestartRepairsCorruptedShmAfterBusinessStops) {
     SpDiag::Platform::ShmClose(oldHandle);
     EXPECT_FALSE(SpDiag::ProbeShmHeader(kLifecycleShm).valid);
 
-    EXPECT_TRUE(manager.RestartShm(MakeConfig()));
+    EXPECT_FALSE(manager.RestartShm(config));
+    config.forceRemoveShm = true;
+    EXPECT_TRUE(manager.RestartShm(config));
     const auto repaired = SpDiag::ProbeShmHeader(kLifecycleShm);
     ASSERT_TRUE(repaired.valid);
     SpDiag::ShmHandle newHandle =

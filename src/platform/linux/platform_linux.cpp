@@ -40,6 +40,7 @@
 #endif
 
 #include "platform.h"
+#include "spdiag/shm_path.h"
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -158,13 +159,14 @@ static inline uint64_t TicksToNs(uint64_t ticks) {
 // ─── 共享内存（不变）──────────────────────────────────────────────
 ShmHandle ShmCreate(const std::string& name, size_t size) {
     ShmHandle handle;
+    const mode_t mode = (name == defaultShmName) ? 0666 : 0600;
     int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
-                      0666);
+                      mode);
     if (fd == -1) {
         handle.errorCode = errno;
         return handle;
     }
-    if (fchmod(fd, 0666) != 0) {
+    if (fchmod(fd, mode) != 0) {
         handle.errorCode = errno;
         close(fd);
         shm_unlink(name.c_str());
@@ -183,6 +185,14 @@ ShmHandle ShmCreate(const std::string& name, size_t size) {
     }
     if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
         handle.errorCode = errno;
+        close(fd);
+        shm_unlink(name.c_str());
+        return handle;
+    }
+    const int reserveError = posix_fallocate(
+        fd, 0, static_cast<off_t>(size));
+    if (reserveError != 0) {
+        handle.errorCode = reserveError;
         close(fd);
         shm_unlink(name.c_str());
         return handle;

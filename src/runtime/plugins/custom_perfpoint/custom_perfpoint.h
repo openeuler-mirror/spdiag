@@ -20,13 +20,14 @@
 #include "plugin_interface.h"
 #include "shm_reader.h"
 #include "sdk/platform.h"
+#include "spdiag/shm_path.h"
 
 namespace SpDiag {
 
 struct CustomPerfpointConfig : SpDiagPluginConfig {
     const char* ConfigTypeId() const override { return "custom_perfpoint"; }
 
-    std::string shmName = "/spdiag_shm_default";
+    std::string shmName = defaultShmName;
     DataSink* dataSink = nullptr;
     bool watchMode = false;
     uint32_t watchIntervalMs = 2000;
