@@ -461,8 +461,8 @@ level_gate = 0
 num_cores = 0
 
 [perf]
-maxSlots = 512
-maxPrograms = 4
+maxSlots = 2048
+maxPrograms = 8
 per_core_top_n = 100
 ```
 
@@ -470,8 +470,8 @@ per_core_top_n = 100
 
 每核 Top-N 统一保存在运行时分配的 `PerCoreTopNStorage`，K=100 与更大容量共用同一条累计 min-heap 链路。LocalShard 按256 slots估算，K=100、1000、10000时每核约0.669 MiB、2.426 MiB、20.004 MiB；392核单进程约占0.256 GiB、0.929 GiB、7.658 GiB。为把K规模读取移出SHM写窗口，timer还会复用一份全核snapshot scratch，同一上限下约增加0.075 GiB、0.748 GiB、7.477 GiB，进程本地峰值约为0.331 GiB、1.677 GiB、15.135 GiB；实际注册slot少于256时按比例下降。SHM 还取决于实际可用核数和 `maxSlots`，每核每slot只保留一份K值存储。以 `maxSlots=2048` 为例，308个有效核约占1.603 GiB、5.833 GiB、48.131 GiB，392个有效核约占2.039 GiB、7.423 GiB、61.256 GiB。有效核数是硬件并发数、cgroup quota和cpuset的最小值。
 
-上例与仓库的 `config/spdiag.conf.example` 一致，并可容纳至少两个使用标准 256-slot 上限的生产者。若没有配置文件，CLI 结构体默认值为 `maxSlots=1024`、`maxPrograms=8`、`per_core_top_n=100`；SDK 本地分片的编译期上限 `MAX_PERF_SLOTS` 当前为 256，这些字段含义不要混淆。`--config` 和旧的 `--shm` 仍处于禁用状态；使用 `--shm-path` 或 `SPDIAG_SHM_PATH` 选择 namespace。
-RPM 升级会按 `%config(noreplace)` 保留已有配置；旧配置仍是 `192/1` 时，需要人工调整并重建 SHM，双生产者能力才会生效。
+上例与仓库的 `config/spdiag.conf.example` 一致。`maxSlots=2048` 是一个 SHM namespace 内所有程序共享的总容量，`maxPrograms=8` 是该 namespace 的程序注册上限；当每个程序都使用 SDK 的 256-slot 本地上限时，正好对应 `8 × 256 = 2048`。程序只申请实际点数，并非固定占满 256 slots。若没有配置文件，CLI 结构体默认值仍为 `maxSlots=1024`、`maxPrograms=8`、`per_core_top_n=100`；SDK 本地分片的编译期上限 `MAX_PERF_SLOTS` 当前为 256，这些字段含义不要混淆。`--config` 和旧的 `--shm` 仍处于禁用状态；使用 `--shm-path` 或 `SPDIAG_SHM_PATH` 选择 namespace。
+RPM 升级会按 `%config(noreplace)` 保留已有配置；旧配置是 `192/1` 或 `512/4` 时，需要人工调整并重建 SHM，新容量才会生效。
 
 本版动态 SDK 的实体库与 SONAME 分别为 `libspdiag.so.2.0.0` 和 `libspdiag.so.2`。升级后需要重新编译 Mooncake 等动态链接消费者，并停止旧业务、重建 SHM 后再启动新业务；不能把 `libspdiag.so.1` 与 ABI revision 5 的 CLI/SHM 混用。
 
