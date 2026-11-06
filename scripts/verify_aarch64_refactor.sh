@@ -106,7 +106,8 @@ ctest 跑的不是当前源码编译的 spdiag。可能原因：
   2) build/spdiag 没被重新编译（cmake --build 没覆盖）
   3) 共享库链接到了 /usr/local/lib64/libspdiag.so 旧版
 请运行：
-  rm -rf ${BUILD_DIR} && bash build.sh -l on -s on -m on -t on
+  cmake -S ${REPO_ROOT} -B ${BUILD_DIR} -DSPDIAG_BUILD_SHARED=ON -DENABLE_PERFLOG=ON -DENABLE_MEMPOINT=ON -DBUILD_TESTS=ON
+  cmake --build ${BUILD_DIR} --parallel
 然后重跑 verify。"
     fi
 
@@ -243,9 +244,13 @@ cmd_build() {
     # 整改后推荐的完整开关：shared lib + PerfLog + MemPoint + tests
     # 对应设计文档 §6.2 第 1 步
     log "构建目录：${BUILD_DIR}"
-    log "开关：-l on（shared） -s on（PerfLog） -m on（MemPoint） -t on（tests）"
+    log "开关：SPDIAG_BUILD_SHARED=ON ENABLE_PERFLOG=ON ENABLE_MEMPOINT=ON BUILD_TESTS=ON"
 
-    bash build.sh -l on -s on -m on -t on
+    cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
+        -DCMAKE_BUILD_TYPE=Debug -DSPDIAG_BUILD_SHARED=ON \
+        -DENABLE_PERFLOG=ON -DENABLE_MEMPOINT=ON \
+        -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON
+    cmake --build "${BUILD_DIR}" --parallel
 
     # 验证产物：查找 spdiag 二进制（CMake 可能输出到 build/ 或 build/src/cli/）
     find_spdiag_binary || die "编译完成但找不到 spdiag CLI 二进制（查找过 ${BUILD_DIR}/spdiag 和 ${BUILD_DIR}/src/cli/spdiag）"

@@ -76,5 +76,8 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo ""
-echo "使用 build.sh 构建并运行测试..."
-exec ./build.sh --clean --test-only "$@"
+echo "使用 CMake 在本地构建并运行测试..."
+# Additional arguments are CMake configuration options.
+cmake -S "$PROJECT_DIR" -B "$PROJECT_DIR/build" -DBUILD_TESTS=ON "$@"
+cmake --build "$PROJECT_DIR/build" --parallel
+exec ctest --test-dir "$PROJECT_DIR/build" --output-on-failure

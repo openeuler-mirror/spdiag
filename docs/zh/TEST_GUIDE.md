@@ -2,11 +2,12 @@
 
 ## 快速开始
 
-`build.sh` 默认不构建测试，必须显式传入 `-t on`：
+`build.sh` 统一生成 RPM，并在打包时自动运行测试。本地开发使用 CMake，不安装到系统：
 
 ```bash
 # 构建时启用测试
-bash build.sh -t on
+cmake -S . -B build -DBUILD_TESTS=ON -DENABLE_MEMPOINT=OFF
+cmake --build build --parallel
 
 # 运行所有测试
 ctest --test-dir build --output-on-failure
@@ -26,14 +27,17 @@ ctest --test-dir build -V
 如果无法从 GitHub 自动下载 GTest，指定本地 googletest 源码：
 
 ```bash
-./build.sh -t on -g /path/to/googletest
+SPDIAG_GTEST_SOURCE=/path/to/googletest \
+  cmake -S . -B build -DBUILD_TESTS=ON -DENABLE_MEMPOINT=OFF
+cmake --build build --parallel
 ```
 
 或设置环境变量：
 
 ```bash
 export SPDIAG_GTEST_SOURCE=/path/to/googletest
-./build.sh -t on
+cmake -S . -B build -DBUILD_TESTS=ON -DENABLE_MEMPOINT=OFF
+cmake --build build --parallel
 ```
 
 ## GTest 安装策略
@@ -56,13 +60,14 @@ sudo apt-get install libgtest-dev
 
 ## `user_def_test` 与安装依赖
 
-`tests/user_def_test` 验证的是**已经安装**的 SDK、CMake package 和用户自定义 PerfPoint `.def`，因此由 `build.sh` 在开启测试且执行安装后单独构建。
+`tests/user_def_test` 验证的是**已经安装**的 SDK、CMake package 和用户自定义 PerfPoint `.def`。先通过 RPM 安装 SDK，再手动构建该独立项目。
 
 当前顶层 CTest 只有在配置阶段发现 `tests/user_def_test/build/user_def_test` 已存在时才注册该测试。这样普通 CMake 构建和 RPM `%check` 不会因为一个尚未安装、尚未构建的外部验证程序失败。
 
 ```bash
 # 只构建和运行仓库内自包含测试
-bash build.sh -t on -i off
+cmake -S . -B build -DBUILD_TESTS=ON -DENABLE_MEMPOINT=OFF
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 
 # 安装后手动验证用户项目接入
@@ -84,7 +89,19 @@ bash tests/user_def_test/build_and_run.sh disabled
 ctest --test-dir build --output-on-failure
 ```
 
-因此 `bash build.sh package` 不只是打包，也会运行仓库内自包含测试；任一测试失败都会终止 RPM 构建。spec 声明 `gtest-devel` 和 `kernel-headers` 为构建依赖。随后单独配置 `build-static`，只构建静态 SDK，不重复执行测试。
+因此 `bash build.sh`（兼容别名 `bash build.sh package`）也会运行仓库内自包含测试；任一测试失败都会终止 RPM 构建。spec 声明 `gtest-devel` 和 `kernel-headers` 为构建依赖。随后单独配置 `build-static`，只构建静态 SDK，不重复执行测试。
+
+成功后终端打印独立的 `output/<构建ID>/` 和完整安装命令。RPM 工作目录每次独立创建并自动清理；需要手动运行测试二进制时，使用上文的本地 CMake 构建。
+
+`test_build_rpm` 已注册到 CTest，RPM 的 `%check` 也会运行。它不需要 aarch64 或真实 `rpmbuild`，使用 Git 归档和模拟打包命令验证来源 SHA、无 Git 源码重打包、并发隔离、失败不发布，以及六条安装/重装命令的路径和包集合；不会安装系统文件。也可以单独运行：
+
+```bash
+bash tests/test_build_rpm.sh
+```
+
+`test_install_consumer` 也已注册到 CTest：先用 `DESTDIR` 安装到测试私有目录，再仅从该目录 `find_package(SpDiag)`，编译并链接包含 `spdiag/perf.h` 的消费者，覆盖 `perf_point.def` 等公开文件及 SDK 导出依赖。共享构建验证共享 target，静态构建验证静态 target。
+
+RPM `%check` 还会针对实际 `%{buildroot}` 中动态和静态 SDK 的共同安装，分别编译、链接两个消费者。以上检查不执行消费者程序，交叉编译环境也能验证安装内容和链接闭包；硬件运行验证仍需目标平台。
 
 ## 测试文件清单
 

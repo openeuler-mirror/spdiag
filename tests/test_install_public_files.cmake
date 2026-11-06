@@ -13,9 +13,10 @@ if(NOT DEFINED SPDIAG_BUILD_DIR OR NOT DEFINED SPDIAG_INSTALL_DIR)
 endif()
 
 file(REMOVE_RECURSE "${SPDIAG_INSTALL_DIR}")
+# DESTDIR also contains absolute install destinations such as /etc in RPM builds.
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" --install "${SPDIAG_BUILD_DIR}"
-            --prefix "${SPDIAG_INSTALL_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E env "DESTDIR=${SPDIAG_INSTALL_DIR}"
+            "${CMAKE_COMMAND}" --install "${SPDIAG_BUILD_DIR}" --prefix /
     RESULT_VARIABLE install_result
     OUTPUT_VARIABLE install_output
     ERROR_VARIABLE install_error

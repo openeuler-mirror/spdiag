@@ -3,11 +3,12 @@
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 
-# 优先加载共享库导出集（SpDiagTargets.cmake），仅在其不存在时回退到静态导出集。
-# 避免两个导出集同时存在时因重复定义 spdiag_logger 等目标而冲突。
+# The shared export contains spdiag_lib; the static export contains
+# spdiag_static and its logger dependency. Load both when both SDKs are installed.
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/SpDiagTargets.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/SpDiagTargets.cmake")
-elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/SpDiagStaticTargets.cmake")
+endif()
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/SpDiagStaticTargets.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/SpDiagStaticTargets.cmake")
 endif()
 

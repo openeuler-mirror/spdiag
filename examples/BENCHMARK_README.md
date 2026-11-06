@@ -4,13 +4,7 @@
 
 ## 构建与前置条件
 
-`build.sh` 默认构建 examples；做性能测量时建议使用 Release，并避免安装到系统：
-
-```bash
-bash build.sh -r -e on -i off
-```
-
-也可以直接使用 CMake：
+`build.sh` 只生成 RPM，不构建 examples。做性能测量时使用 CMake 在本地构建 Release：
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON -DBUILD_TESTS=OFF
@@ -25,7 +19,7 @@ PerfPoint 只有在共享内存存在且 SDK 成功注册后才会进入统计�
 ./build/src/cli/spdiag stop
 ```
 
-`build.sh` 在发现 `/dev/shm/spdiag_shm*` 仍存在时会要求先停止 SpDiag，避免新旧共享内存布局不一致。
+切换到本地构建的 CLI 和 SDK 前，先用原版本的 `spdiag stop` 停止采集，避免新旧共享内存布局不一致。
 
 ## 当前基准程序
 
@@ -140,7 +134,8 @@ PerfPoint 只有在共享内存存在且 SDK 成功注册后才会进入统计�
 一个最小的人工回归流程：
 
 ```bash
-bash build.sh -r -e on -i off
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON -DBUILD_TESTS=OFF
+cmake --build build --parallel
 ./build/src/cli/spdiag start
 ./build/examples/benchmark_perfpoint_overhead -n 5000000
 ./build/src/cli/spdiag stop

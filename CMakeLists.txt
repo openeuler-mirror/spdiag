@@ -62,27 +62,7 @@ set(SPDIAG_LOG_ERROR_SYNC_FLUSH "1" CACHE STRING
 # 放在架构硬断言之前：即使架构不匹配 FATAL_ERROR，build_info 也已生成，
 # 便于事后排查"哪个 commit 在错架构上 configure 过"。
 # ---------------------------------------------------------------------------
-find_package(Git QUIET)
-set(SPDIAG_GIT_SHA "unknown")
-set(SPDIAG_GIT_DIRTY "")
-if(GIT_FOUND)
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        OUTPUT_VARIABLE _sha OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET RESULT_VARIABLE _rc)
-    if(_rc EQUAL 0)
-        set(SPDIAG_GIT_SHA "${_sha}")
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} status --porcelain
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            OUTPUT_VARIABLE _dirty OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET)
-        if(_dirty)
-            set(SPDIAG_GIT_DIRTY "-dirty")
-        endif()
-    endif()
-endif()
+include(cmake/SpDiagBuildIdentity.cmake)
 string(TIMESTAMP SPDIAG_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%S")
 configure_file(
     ${CMAKE_SOURCE_DIR}/cmake/_build_info.h.in

@@ -1,6 +1,25 @@
 # SpDiag QuickStart - 接入指南
 
-本文档面向用户，介绍如何将 SpDiag 集成到项目并使用各项功能。源码安装、RPM 包拆分、动态/静态 SDK 和 submodule 接入的完整说明见 [INSTALLATION.md](INSTALLATION.md)。
+本文档面向用户，介绍如何将 SpDiag 集成到项目并使用各项功能。RPM 构建与安装、包拆分、动态/静态 SDK 和 submodule 接入的完整说明见 [INSTALLATION.md](INSTALLATION.md)。
+
+## 构建、安装与首次使用
+
+在 Linux aarch64 上准备好[构建依赖](INSTALLATION.md#1-平台与依赖)，从干净的 Git 工作树或带提交元数据的正式源码归档根目录执行：
+
+```bash
+# 构建 RPM；功能开关按需追加，如 -s on、-p on、-m on
+bash build.sh
+
+# 根据构建结束时打印的 RPM output directory 找到产物，安装 CLI 和动态 SDK
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
+
+spdiag --version
+spdiag --help
+```
+
+构建结束会列出 RPM 完整路径，并按仅 CLI、动态 SDK、静态 SDK 给出可直接复制的命令：首次安装或升级使用 `sudo dnf install`，相同 Version/Release 的对应包已经安装时使用 `sudo dnf reinstall` 覆盖重装。命令只包含本次生成的相应二进制包。只使用 Memstat/Cachestat 等 CLI 功能时选择主包命令；静态 SDK 选择主包、开发包、静态包三者一起操作的命令。升级、配置迁移及历史源码安装清理见[安装指南](INSTALLATION.md#35-升级配置文件和卸载)。
+
+安装完成后再进行下文的 SDK 接入和命令操作。`build.sh` 不构建示例程序；需要 `build/examples/` 时，另按[示例说明](examples/README.md)使用 CMake。
 
 ## 功能概览
 
@@ -115,14 +134,7 @@ target_link_libraries(my_app PRIVATE SpDiag::spdiag_lib)
 - `target_include_directories` 需包含 `.def` 文件所在目录（默认编译器会在 include 路径中查找 `"perf_points.def"`）
 - 如果 `.def` 文件在子目录中，如 `defs/perf_points.def`，需将 `defs/` 加入 include 路径
 
-> **提示**：源码默认安装在 `/usr/local`；RPM 安装在发行版标准 include/libdir。使用导出 target 后无需硬编码路径。动态链接使用 `SpDiag::spdiag_lib`，静态链接使用 `SpDiag::spdiag_static`，详见 [安装指南](INSTALLATION.md#41-选择动态链接或静态链接)。
->
-> 也可直接用命令行编译：
->
-> ```bash
-> g++ -o myapp main.cpp -I/usr/local/include -I. -L/usr/local/lib \
->   -lspdiag -lspdiag_logger -lpthread -lrt
-> ```
+> **提示**：`bash build.sh` 生成 RPM，安装后使用发行版标准 include/libdir。使用导出 target 无需硬编码路径。动态链接使用 `SpDiag::spdiag_lib`，静态链接使用 `SpDiag::spdiag_static`，详见 [安装指南](INSTALLATION.md#41-选择动态链接或静态链接)。
 
 > **增删改打点**：修改 `.def` 文件后只需重新编译用户程序，无需重编 SpDiag 库。名称变化的 slot 数据会自动清零，名称不变的 slot 数据保留累加。
 
@@ -313,14 +325,19 @@ PerfLog 需先集成 PerfPoint SDK。启用仅需修改编译和启动参数：
 ### 操作流程
 
 ```bash
-# 1. 编译（PerfPoint + PerfLog）
+# 1. 从 SpDiag 仓库构建并安装启用 PerfLog 的 RPM
 bash build.sh -s on
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
+```
 
+安装后，按 PerfPoint 的“第4步”重新编译已集成 SDK 的业务程序，再执行以下操作。仓库中的 `demo_app` 需要单独按[示例说明](examples/README.md)构建。
+
+```bash
 # 2. 启动共享内存
 sudo spdiag start --perflog
 
 # 3. 运行应用（与 PerfPoint 完全相同）
-./build/examples/demo_app
+./my_app
 
 # 4. 查看日志
 spdiag show --perflog             # 一次性输出
@@ -380,10 +397,11 @@ OB Memstat 是基于 eBPF uprobe 的**无侵入式**内存分配追踪功能。�
 sudo dnf install -y cmake gcc-c++ clang libbpf-devel bpftool libelf-devel zlib-devel
 ```
 
-编译：
+从源码生成 RPM 并安装（完整构建依赖见[安装指南](INSTALLATION.md#1-平台与依赖)）：
 
 ```bash
 bash build.sh
+# 复制本次构建输出中 Install/upgrade (CLI/runtime) 后的完整命令并执行
 ```
 
 > OB 功能与 SHM 打点功能是独立的，**不需要**先执行 `spdiag start`。
@@ -745,7 +763,7 @@ find_package(SpDiag CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE SpDiag::spdiag_lib)
 ```
 
-必须先用 `bash build.sh -m on` 或 RPM 的 `bash build.sh package -m on` 构建 SpDiag。缺少 `sys/sdt.h` 时 CMake 会关闭该功能；未定义 `SPDIAG_ENABLE_MEMPOINT` 时相关类型不会声明，业务代码应使用同一构建配置或用条件编译保护。
+必须先用 `bash build.sh -m on` 生成并安装启用 MemPoint 的 RPM（动态链接安装主包和 `-devel`，静态链接再安装 `-static`，见[安装指南](INSTALLATION.md#33-安装已经生成的-rpm)）。兼容入口为 `bash build.sh package -m on`。缺少 `sys/sdt.h` 时 CMake 会关闭该功能；未定义 `SPDIAG_ENABLE_MEMPOINT` 时相关类型不会声明，业务代码应使用同一构建配置或用条件编译保护。
 
 ### 第5步：运行与查看
 

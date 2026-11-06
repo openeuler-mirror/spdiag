@@ -143,6 +143,8 @@ target_link_libraries(user_def_test PRIVATE SpDiag::spdiag_lib)
 
 ## 5. 一键运行
 
+先按第 6 节通过 RPM 安装 SpDiag SDK，再从仓库根目录运行下面的命令；`build.sh` 生成 RPM 后不会自动安装 SDK 或构建本测试。
+
 默认运行正常打点功能测试：
 
 ```bash
@@ -164,14 +166,12 @@ bash tests/user_def_test/build_and_run.sh disabled
 
 ## 6. 分步手动运行
 
-### Step 1：编译并安装 SPdiag 库
+### Step 1：通过 RPM 安装 SpDiag SDK
 
 ```bash
 cd /path/to/spdiag
-mkdir -p build && cd build
-cmake .. -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF
-cmake --build . --target spdiag_lib -j$(nproc)
-sudo cmake --install .    # 安装到 /usr/local
+bash build.sh
+# 复制本次构建输出中 Install/upgrade (dynamic SDK) 后的完整命令并执行
 ```
 
 ### Step 2：编译用户测试项目
@@ -179,7 +179,7 @@ sudo cmake --install .    # 安装到 /usr/local
 ```bash
 cd /path/to/spdiag/tests/user_def_test
 mkdir -p build && cd build
-cmake ..                  # find_package 自动从 /usr/local 找到 SpDiag
+cmake ..                  # find_package 查找 RPM 安装的 SpDiag SDK
 cmake --build . -j$(nproc)
 ```
 
@@ -336,11 +336,11 @@ PERF_KEY_DEF(MY_NEW_POINT, "MyModule", "MyPoint")
 
 ```bash
 # 确认库已安装
-ls /usr/local/lib/libspdiag.a
-ls /usr/local/lib/cmake/SpDiag/SpDiagConfig.cmake
+rpm -q spdiag spdiag-devel
+rpm -ql spdiag-devel
 
-# 重新安装
-cd /path/to/spdiag/build && sudo cmake --install .
+# 从已配置的软件仓库安装 SDK
+sudo dnf install spdiag-devel
 ```
 
 ### Q: 运行报错 `FATAL: PerfManager auto-init failed`

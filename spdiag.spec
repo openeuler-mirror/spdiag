@@ -27,6 +27,8 @@ BuildRequires:  systemtap-sdt-devel
 BuildRequires:  gtest-devel
 BuildRequires:  kernel-headers
 BuildRequires:  pkgconfig
+BuildRequires:  git
+BuildRequires:  bash
 
 Requires:       libbpf
 Requires:       elfutils-libelf
@@ -66,8 +68,9 @@ runtime dependency on the SpDiag shared library.
 %set_build_flags
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DSPDIAG_SOURCE_COMMIT=%{?spdiag_source_commit} \
     -DCMAKE_INSTALL_PREFIX=%{_prefix} \
-    -DCMAKE_INSTALL_LIBDIR=%{_libdir} \
+    -DCMAKE_INSTALL_LIBDIR=%{_lib} \
     -DCMAKE_INSTALL_SYSCONFDIR=%{_sysconfdir} \
     -DCMAKE_SKIP_INSTALL_RPATH=ON \
     -DBUILD_TESTS=ON \
@@ -83,8 +86,9 @@ cmake -S . -B build \
 
 cmake -S . -B build-static \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DSPDIAG_SOURCE_COMMIT=%{?spdiag_source_commit} \
     -DCMAKE_INSTALL_PREFIX=%{_prefix} \
-    -DCMAKE_INSTALL_LIBDIR=%{_libdir} \
+    -DCMAKE_INSTALL_LIBDIR=%{_lib} \
     -DCMAKE_INSTALL_SYSCONFDIR=%{_sysconfdir} \
     -DCMAKE_SKIP_INSTALL_RPATH=ON \
     -DBUILD_TESTS=OFF \
@@ -105,6 +109,10 @@ DESTDIR=%{buildroot} cmake --install build-static \
 
 %check
 ctest --test-dir build --output-on-failure %{?_smp_mflags}
+# Validate both exports together using the actual staged RPM installation.
+cmake -S tests/install_consumer -B build-rpm-consumer \
+    -DSPDIAG_PACKAGE_DIR="%{buildroot}%{_libdir}/cmake/SpDiag"
+cmake --build build-rpm-consumer
 
 %files
 %defattr(-,root,root,-)
@@ -119,7 +127,9 @@ ctest --test-dir build --output-on-failure %{?_smp_mflags}
 %defattr(-,root,root,-)
 %{_libdir}/libspdiag.so
 %{_includedir}/spdiag/
-%{_libdir}/cmake/SpDiag/
+%dir %{_libdir}/cmake/SpDiag
+%{_libdir}/cmake/SpDiag/SpDiagConfig*.cmake
+%{_libdir}/cmake/SpDiag/SpDiagTargets*.cmake
 
 %files static
 %defattr(-,root,root,-)

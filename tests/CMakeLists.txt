@@ -12,6 +12,23 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 
+find_program(SPDIAG_BASH_EXECUTABLE bash)
+if(NOT SPDIAG_BASH_EXECUTABLE)
+    message(FATAL_ERROR "bash is required for packaging tests")
+endif()
+add_test(NAME test_build_rpm
+    COMMAND "${SPDIAG_BASH_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_build_rpm.sh")
+set_tests_properties(test_build_rpm PROPERTIES TIMEOUT 60)
+
+add_test(NAME test_install_consumer
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSPDIAG_BUILD_DIR=${CMAKE_BINARY_DIR}"
+        "-DSPDIAG_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+        "-DSPDIAG_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DSPDIAG_BUILD_SHARED=${SPDIAG_BUILD_SHARED}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/test_install_consumer.cmake")
+set_tests_properties(test_install_consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
+
 if(DEFINED ENV{SPDIAG_GTEST_SOURCE})
     message(STATUS "Using GTest from SPDIAG_GTEST_SOURCE: $ENV{SPDIAG_GTEST_SOURCE}")
     add_subdirectory($ENV{SPDIAG_GTEST_SOURCE} googletest-build)
@@ -141,8 +158,8 @@ target_include_directories(test_dump_conflict_reader PRIVATE
 )
 target_link_libraries(test_dump_conflict_reader PRIVATE spdiag_lib)
 
-# user_def_test validates an already installed SDK and is built separately by
-# build.sh after installation. Register it only when that binary exists so
+# user_def_test validates an SDK installed via RPM and is built separately.
+# Register it only when that binary exists so
 # normal CTest/RPM builds remain self-contained.
 set(SPDIAG_USER_DEF_TEST "${CMAKE_SOURCE_DIR}/tests/user_def_test/build/user_def_test")
 if(EXISTS "${SPDIAG_USER_DEF_TEST}")
