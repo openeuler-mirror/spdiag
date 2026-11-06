@@ -11,6 +11,8 @@
  */
 
 #include "persistent_aggr.h"
+#include "private_storage.h"
+#include "spdiag/log_macros.h"
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -35,13 +37,16 @@ static bool SamePersistentIdentity(const AggregatedStat& lhs,
     return lhs.globalSlotIndex == rhs.globalSlotIndex;
 }
 
-PersistentAggr::PersistentAggr(const std::string& dataDir)
+PersistentAggr::PersistentAggr(const std::string& dataDir,
+                               bool privateStorage)
     : dataDir_(dataDir)
     , aggrFilePath_(dataDir + "/aggr.bin")
-    , snapshotFilePath_(dataDir + "/snapshot.bin") {
+    , snapshotFilePath_(dataDir + "/snapshot.bin")
+    , privateStorage_(privateStorage) {
 }
 
 bool PersistentAggr::Exists() const {
+    if (privateStorage_ && !ValidatePrivateFile(aggrFilePath_)) return false;
     std::ifstream f(aggrFilePath_, std::ios::binary);
     return f.is_open();
 }
@@ -162,9 +167,21 @@ static bool ReadStat(std::ifstream& in, AggregatedStat& stat) {
 }
 
 bool PersistentAggr::SaveDataFile(const std::string& path, uint32_t magic, const std::vector<AggregatedStat>& data) {
-    std::filesystem::create_directories(dataDir_);
+    std::string storageError;
+    if (privateStorage_) {
+        if (!PreparePrivateFile(path, &storageError)) {
+            SPDIAG_LOG_ERROR(LogModule::MANAGER, "%s", storageError.c_str());
+            return false;
+        }
+    } else {
+        std::filesystem::create_directories(dataDir_);
+    }
     std::ofstream out(path, std::ios::binary);
     if (!out.is_open()) return false;
+    if (privateStorage_ && !RestrictPrivateFile(path, &storageError)) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER, "%s", storageError.c_str());
+        return false;
+    }
 
     out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
     out.write(reinterpret_cast<const char*>(&FILE_VERSION), sizeof(FILE_VERSION));
@@ -181,6 +198,7 @@ bool PersistentAggr::SaveDataFile(const std::string& path, uint32_t magic, const
 
 std::vector<AggregatedStat> PersistentAggr::LoadDataFile(const std::string& path, uint32_t magic) {
     std::vector<AggregatedStat> result;
+    if (privateStorage_ && !ValidatePrivateFile(path)) return result;
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) return result;
 
@@ -217,13 +235,18 @@ bool PersistentAggr::SaveSnapshot(const std::vector<AggregatedStat>& snapshot) {
     return SaveDataFile(snapshotFilePath_, SNAPSHOT_MAGIC, snapshot);
 }
 
+bool PersistentAggr::ResetSnapshot() {
+    std::error_code error;
+    std::filesystem::remove(snapshotFilePath_, error);
+    return !error;
+}
+
 std::vector<AggregatedStat> PersistentAggr::LoadSnapshot() {
     return LoadDataFile(snapshotFilePath_, SNAPSHOT_MAGIC);
 }
 
 std::vector<AggregatedStat> PersistentAggr::Update(const std::vector<AggregatedStat>& currentSnapshot) {
     if (!Exists()) {
-        std::filesystem::create_directories(dataDir_);
         SaveAggr(currentSnapshot);
         SaveSnapshot(currentSnapshot);
         return currentSnapshot;

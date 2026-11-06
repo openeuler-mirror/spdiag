@@ -120,10 +120,11 @@ RPM `%check` 还会针对实际 `%{buildroot}` 中动态和静态 SDK 的共同�
 | test_perflog.cpp | PerfLog 探针日志 |
 | test_global_perf_point.cpp | 全局 PerfPoint（跨线程模式） |
 | test_shm_layout.cpp | 共享内存数据结构 |
+| test_shm_path.cpp | SHM namespace 规范化、环境变量优先级和数据目录隔离 |
 | test_mem_point.cpp | MemPoint 内存追踪核心（需 `SPDIAG_ENABLE_MEMPOINT`） |
 | test_object_mem_point.cpp | MemPoint 字段级内存拆解（ObjectMemPoint + FieldSizeTraits，需 `SPDIAG_ENABLE_MEMPOINT`） |
 | test_mem_point_sdk.cpp | MemPoint SDK（TrackValue / TrackedAllocator / tracked 容器，需 `SPDIAG_ENABLE_MEMPOINT`） |
-| test_platform.cpp | 平台抽象层（GetCurrentCpuId 等） |
+| test_platform.cpp | 平台抽象层（GetCurrentCpuId、SHM 权限与 backing reservation 等） |
 
 ### Manager 层
 
@@ -132,6 +133,7 @@ RPM `%check` 还会针对实际 `%{buildroot}` 中动态和静态 SDK 的共同�
 | test_aggregator.cpp | 数据聚合 |
 | test_dump_recorder.cpp | DumpRecorder |
 | test_persistent_aggr.cpp | 持久化聚合 |
+| test_multi_shm_namespace.cpp | 双 namespace 生命周期、外部 SHM 防误删、显式恢复和晚启动重连 |
 | test_percentile_calculator.cpp | 百分位数计算（需 `SPDIAG_ENABLE_PERCENTILE`） |
 
 ### Runtime 层

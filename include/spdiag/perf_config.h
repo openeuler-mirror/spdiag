@@ -14,11 +14,12 @@
 #include <string>
 #include <cstdint>
 #include "spdiag/perf_level.h"
+#include "spdiag/shm_path.h"
 
 namespace SpDiag {
 
 struct PerfConfig {
-    std::string shmName         = "/spdiag_shm_default";
+    std::string shmName         = defaultShmName;
     RunMode     mode            = RunMode::DEBUG;
     uint8_t     levelGate       = 0;
     uint32_t    maxSlots        = 64;

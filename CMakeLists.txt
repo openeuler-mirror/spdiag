@@ -173,9 +173,10 @@ install(DIRECTORY include/spdiag
     FILES_MATCHING PATTERN "*.h"
 )
 
-# perf_key_defined.h includes this public definition list at compile time.
+# perf_key_defined.h expands this public definition list at compile time.
 install(FILES include/spdiag/perf_point.def
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/spdiag)
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/spdiag
+)
 
 # 导出 CMake Targets（支持 find_package）
 if(SPDIAG_BUILD_SHARED)

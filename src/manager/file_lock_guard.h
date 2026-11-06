@@ -13,6 +13,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -36,5 +37,7 @@ private:
 };
 
 std::string MakeLockName(const char* domain, const std::string& key);
+std::string MakeBoundedLockName(const char* domain, const std::string& key,
+                                uint64_t bucketCount);
 
 }  // namespace SpDiag

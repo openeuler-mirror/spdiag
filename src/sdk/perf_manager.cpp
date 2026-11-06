@@ -13,6 +13,7 @@
 #include "spdiag/perf_manager.h"
 #include "spdiag/perf_key_defined.h"
 #include "spdiag/log_macros.h"
+#include "spdiag/shm_path.h"
 #include "shm_writer.h"
 #include "perf_timer.h"
 #include "platform.h"
@@ -90,7 +91,13 @@ void PerfManager::Init(const PerfConfig& config) {
         return;
     }
 
-    shmName_ = config.shmName;
+    std::string shmError;
+    if (!ResolveSdkShmName(config.shmName, shmName_, shmError)) {
+        SPDIAG_LOG_ERROR(LogModule::SDK, "invalid SPDIAG_SHM_PATH: %s",
+                         shmError.c_str());
+        probeDone_.store(true, std::memory_order_release);
+        return;
+    }
     mode_ = config.mode;
     programName_ = config.programName;
     processStartTimeTicks_ = Platform::GetProcessStartTimeTicks(getpid());
@@ -139,6 +146,16 @@ void PerfManager::EnsureInitialized() {
         slotCount_ = (autoCount > 0) ? autoCount
                     : static_cast<uint32_t>(PerfKeyDefined::PERF_KEY_DEFINED_COUNT);
     }
+
+    std::string resolvedShm;
+    std::string shmError;
+    if (!ResolveSdkShmName(shmName_, resolvedShm, shmError)) {
+        SPDIAG_LOG_ERROR(LogModule::SDK, "invalid SPDIAG_SHM_PATH: %s",
+                         shmError.c_str());
+        probeDone_.store(true, std::memory_order_release);
+        return;
+    }
+    shmName_ = std::move(resolvedShm);
 
     auto probe = ProbeShmHeader(shmName_);
     if (!probe.IsCompatible() || !ConnectToExistingShm(0)) {
@@ -284,16 +301,26 @@ void PerfManager::StartShmWatcher() {
         return;
     }
 
-    shmWatcher_ = std::make_unique<std::thread>([this]() {
+    const std::string target = shmName_.substr(1);
+    shmWatcher_ = std::make_unique<std::thread>([this, target]() {
         int fd = inotify_init1(IN_NONBLOCK);
         if (fd < 0) {
             return;
         }
-        int wd = inotify_add_watch(fd, "/dev/shm/", IN_CREATE | IN_DELETE);
+        int wd = inotify_add_watch(fd, "/dev/shm/",
+                                   IN_CLOSE_WRITE | IN_DELETE);
         if (wd < 0) {
             close(fd);
             return;
         }
+        auto rearmIfDisconnected = [this]() {
+            std::lock_guard<std::mutex> lock(initMutex_);
+            if (!initialized_.load(std::memory_order_acquire) &&
+                ProbeShmHeader(shmName_).IsCompatible()) {
+                probeDone_.store(false, std::memory_order_release);
+            }
+        };
+        rearmIfDisconnected();
 
         struct pollfd pfd;
         pfd.fd = fd;
@@ -308,7 +335,6 @@ void PerfManager::StartShmWatcher() {
             ssize_t len = read(fd, buf, sizeof(buf));
             if (len <= 0) continue;
 
-            const char* target = "spdiag_shm_default";
             const char* cursor = buf;
             const char* end = buf + len;
             while (end - cursor >=
@@ -319,9 +345,10 @@ void PerfManager::StartShmWatcher() {
                 if (eventSize > static_cast<size_t>(end - cursor)) {
                     break;
                 }
-                if (ev->len > 0 && ev->name[0] != '\0' && std::strcmp(ev->name, target) == 0) {
-                    if (ev->mask & IN_CREATE) {
-                        probeDone_.store(false, std::memory_order_release);
+                if (ev->len > 0 && ev->name[0] != '\0' &&
+                    target == ev->name) {
+                    if (ev->mask & IN_CLOSE_WRITE) {
+                        rearmIfDisconnected();
                     } else if (ev->mask & IN_DELETE) {
                         initialized_.store(false, std::memory_order_release);
                     }

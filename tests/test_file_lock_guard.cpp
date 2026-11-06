@@ -83,3 +83,27 @@ TEST_F(FileLockGuardTest, SigkillReleasesKernelLock) {
     ASSERT_TRUE(WIFSIGNALED(status));
     EXPECT_TRUE(SpDiag::FileLockGuard::AcquireFor(kLockName, 100ms));
 }
+
+TEST_F(FileLockGuardTest, ExistingBucketOpensAcrossUserIds) {
+    if (geteuid() != 0) GTEST_SKIP() << "requires two unprivileged UIDs";
+    for (const uid_t uid : {static_cast<uid_t>(65534),
+                            static_cast<uid_t>(65533)}) {
+        const pid_t child = fork();
+        ASSERT_GE(child, 0);
+        if (child == 0) {
+            if (setgid(uid) != 0 || setuid(uid) != 0) _exit(10);
+            auto guard = SpDiag::FileLockGuard::AcquireFor(
+                kLockName, 200ms);
+            _exit(guard.has_value() ? 0 : 11);
+        }
+        int status = 0;
+        ASSERT_EQ(waitpid(child, &status, 0), child);
+        ASSERT_TRUE(WIFEXITED(status));
+        EXPECT_EQ(WEXITSTATUS(status), 0) << "uid=" << uid;
+    }
+}
+
+TEST(FileLockNameTest, DefaultLifecycleLockKeepsLegacyIdentity) {
+    EXPECT_EQ(SpDiag::MakeLockName("lifecycle", "/spdiag_shm_default"),
+              "/spdiag_lock_lifecycle_90e125135bbac5dd");
+}

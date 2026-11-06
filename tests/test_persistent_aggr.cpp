@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #include "src/manager/persistent_aggr.h"
 #include <filesystem>
+#include <sys/stat.h>
 #include <vector>
 
 namespace {
@@ -84,6 +85,20 @@ TEST_F(PersistentAggrTest, FirstUpdateCreatesFiles) {
     EXPECT_EQ(loaded[0].globalMaxTimeNs, 50u);
     EXPECT_EQ(loaded[0].moduleName, "mod");
     EXPECT_EQ(loaded[0].pointName, "pt");
+}
+
+TEST_F(PersistentAggrTest, PrivateStorageUsesOwnerOnlyPermissions) {
+    SpDiag::PersistentAggr pa(testDir_, true);
+    pa.Update({MakeStat(1, "mod", "pt", 1, 10)});
+
+    struct stat info {};
+    ASSERT_EQ(stat(testDir_.c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777, 0700);
+    for (const char* name : {"aggr.bin", "snapshot.bin"}) {
+        const std::string path = testDir_ + "/" + name;
+        ASSERT_EQ(stat(path.c_str(), &info), 0);
+        EXPECT_EQ(info.st_mode & 0777, 0600);
+    }
 }
 
 TEST_F(PersistentAggrTest, IncrementalUpdate) {

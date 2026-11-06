@@ -129,6 +129,14 @@ void RegisterPlugins(SpDiagManager& manager) {
 int main(int argc, char* argv[]) {
     auto config = Cli::CliConfig::ParseArgs(argc, argv);
 
+    if (config.shmExportSyntax) {
+        std::cerr
+            << "spdiag: --export selects SHM only for this command; run 'export "
+            << SpDiag::shmPathEnvironment << "="
+            << SpDiag::ShmFilesystemPath(config.shmName)
+            << "' before starting the business process" << std::endl;
+    }
+
     // 设置运行时日志级别（如有指定 --log-level 参数）
     if (!config.logLevelStr.empty()) {
         auto level = SpDiag::ParseLogLevelName(config.logLevelStr);

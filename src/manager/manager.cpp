@@ -20,6 +20,7 @@
 #include "spdiag/shm_layout.h"
 #include "spdiag/perf_config.h"
 #include "spdiag/log_macros.h"
+#include "spdiag/shm_path.h"
 #include "runtime/plugin_types.h"
 #include "runtime/shm_reader.h"
 #include "runtime/plugins/custom_perfpoint/custom_perfpoint.h"
@@ -61,6 +62,15 @@ std::chrono::milliseconds DumpRequestTimeout(uint32_t capacity) {
     return std::chrono::milliseconds(timeout);
 }
 
+std::string LifecycleLockName(const std::string& shmName) {
+    if (shmName == defaultShmName) {
+        return MakeLockName("lifecycle", shmName);
+    }
+    constexpr uint64_t customLockBuckets = 256;
+    return MakeBoundedLockName("lifecycle_custom", shmName,
+                               customLockBuckets);
+}
+
 void PrintShmOperationError(const char* action, const std::string& shmName,
                             int errorCode) {
     std::cerr << "spdiag: failed to " << action << " SHM " << shmName
@@ -69,6 +79,41 @@ void PrintShmOperationError(const char* action, const std::string& shmName,
         std::cerr << "; run the command as the SHM owner or root";
     }
     std::cerr << std::endl;
+}
+
+bool CustomShmCanBeDestroyed(const std::string& shmName, bool forceRemove) {
+    if (shmName == defaultShmName) return true;
+
+    int inspectError = 0;
+    const auto existence = Platform::ShmCheckExistence(shmName, &inspectError);
+    if (existence == ShmExistence::ABSENT) return true;
+    if (existence == ShmExistence::ERROR) {
+        if (forceRemove) {
+            std::cerr << "spdiag: force-removing inaccessible custom SHM "
+                      << shmName << std::endl;
+            return true;
+        }
+        PrintShmOperationError("inspect", shmName, inspectError);
+        return false;
+    }
+
+    const auto probe = ProbeShmHeader(shmName);
+    if (!probe.valid) {
+        if (forceRemove) {
+            std::cerr << "spdiag: force-removing unrecognized custom SHM "
+                      << shmName << std::endl;
+            return true;
+        }
+        std::cerr << "spdiag: refusing to remove custom SHM " << shmName
+                  << " because it is not a compatible SpDiag object"
+                  << "; if this path is confirmed to belong to SpDiag, run: "
+                  << "export " << shmPathEnvironment << "="
+                  << ShmFilesystemPath(shmName)
+                  << " && spdiag stop --force-remove"
+                  << std::endl;
+        return false;
+    }
+    return true;
 }
 
 bool CheckShmExistence(const std::string& shmName, bool& exists) {
@@ -344,10 +389,16 @@ CollectResult SpDiagManager::CollectAndAggregate(const Cli::CliConfig& config) {
         result.globalAccumCount);
     result.aggregated = aggregator.Results();
 
-    PersistentAggr persistentAggr(config.dataDir);
+    // Persistence advances only after this collection observed statistics.
+    if (result.aggregated.empty()) {
+        return result;
+    }
+
+    const bool privateStorage = config.shmName != defaultShmName;
+    PersistentAggr persistentAggr(config.dataDir, privateStorage);
     result.delta = persistentAggr.Update(result.aggregated);
 
-    DumpRecorder recorder(config.historySize);
+    DumpRecorder recorder(config.historySize, privateStorage);
     std::string historyPath = config.dataDir + "/history.bin";
     recorder.LoadFromFile(historyPath);
 
@@ -437,7 +488,8 @@ bool SpDiagManager::RequestFreshDump(const Cli::CliConfig& config) {
 }
 
 std::vector<DumpRecord> SpDiagManager::QueryHistory(const Cli::CliConfig& config) {
-    DumpRecorder recorder(config.historySize);
+    DumpRecorder recorder(config.historySize,
+                          config.shmName != defaultShmName);
     std::string historyPath = config.dataDir + "/history.bin";
 
     if (!recorder.LoadFromFile(historyPath) || recorder.Count() == 0) {
@@ -454,6 +506,14 @@ std::vector<DumpRecord> SpDiagManager::QueryHistory(const Cli::CliConfig& config
 bool SpDiagManager::ClearData(const Cli::CliConfig& config) {
     if (!processor_.ClearSharedMemory(config.shmName)) {
         SPDIAG_LOG_ERROR(LogModule::MANAGER, "failed to clear shared memory");
+        return false;
+    }
+
+    PersistentAggr persistentAggr(config.dataDir,
+                                  config.shmName != defaultShmName);
+    if (!persistentAggr.ResetSnapshot()) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER,
+                         "failed to reset persistent snapshot after clear");
         return false;
     }
 
@@ -563,7 +623,7 @@ bool SpDiagManager::RecreateShm(const Cli::CliConfig& config,
                                 bool startCommand) {
     int lockError = 0;
     auto lifecycle = FileLockGuard::AcquireFor(
-        MakeLockName("lifecycle", config.shmName),
+        LifecycleLockName(config.shmName),
         std::chrono::seconds(5), &lockError);
     if (!lifecycle) {
         std::cerr << "spdiag: lifecycle lock unavailable (error "
@@ -600,11 +660,20 @@ bool SpDiagManager::RecreateShm(const Cli::CliConfig& config,
                      "force-recreates the shared SHM; stop Mooncake first "
                      "because this command does not stop business processes"
                   << std::endl;
+        if (!CustomShmCanBeDestroyed(config.shmName,
+                                     config.forceRemoveShm)) return false;
     }
 
     int destroyError = 0;
     if (!DestroyShm(config.shmName, &destroyError)) {
         PrintShmOperationError("remove", config.shmName, destroyError);
+        return false;
+    }
+    PersistentAggr persistentAggr(config.dataDir,
+                                  config.shmName != defaultShmName);
+    if (!persistentAggr.ResetSnapshot()) {
+        SPDIAG_LOG_ERROR(LogModule::MANAGER,
+                         "failed to reset persistent snapshot for new SHM");
         return false;
     }
     if (!CreateShm(config)) {
@@ -629,13 +698,16 @@ bool SpDiagManager::StartShm(const Cli::CliConfig& config) {
 bool SpDiagManager::StopShm(const Cli::CliConfig& config) {
     int lockError = 0;
     auto lifecycle = FileLockGuard::AcquireFor(
-        MakeLockName("lifecycle", config.shmName),
+        LifecycleLockName(config.shmName),
         std::chrono::seconds(5), &lockError);
     if (!lifecycle) {
         std::cerr << "spdiag: lifecycle lock unavailable (error "
                   << lockError << ")" << std::endl;
         return false;
     }
+
+    if (!CustomShmCanBeDestroyed(config.shmName,
+                                 config.forceRemoveShm)) return false;
 
     int inspectError = 0;
     const auto existence =

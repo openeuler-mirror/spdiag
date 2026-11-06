@@ -107,7 +107,7 @@ TEST(PlatformShmTest, ExclusiveCreateDoesNotTruncateExistingObject) {
     EXPECT_TRUE(SpDiag::Platform::ShmDestroy(kShmName));
 }
 
-TEST(PlatformShmTest, CreatePublishesReadWriteModeIndependentOfUmask) {
+TEST(PlatformShmTest, CustomNamespaceIsOwnerOnlyIndependentOfUmask) {
     ASSERT_TRUE(SpDiag::Platform::ShmDestroy(kShmName));
     const mode_t oldMask = umask(0077);
     SpDiag::ShmHandle handle =
@@ -117,7 +117,8 @@ TEST(PlatformShmTest, CreatePublishesReadWriteModeIndependentOfUmask) {
     ASSERT_NE(handle.baseAddr, nullptr);
     struct stat info {};
     ASSERT_EQ(fstat(handle.fd, &info), 0);
-    EXPECT_EQ(info.st_mode & 0777, 0666);
+    EXPECT_EQ(info.st_mode & 0777, 0600);
+    EXPECT_GE(static_cast<uint64_t>(info.st_blocks) * 512u, kShmSize);
     EXPECT_TRUE(SpDiag::Platform::ShmCheckReadWrite(kShmName));
 
     SpDiag::Platform::ShmClose(handle);

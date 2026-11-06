@@ -23,6 +23,9 @@ spdiag <command> [options]
 | `-h, --help` | 显示帮助信息 |
 | `--version` | 显示版本号 |
 | `--config <path>` | 当前禁用；配置仍会从默认路径自动加载 |
+| `--shm-path <path>` | 为当前命令选择 `NAME`、`/NAME` 或 `/dev/shm/NAME` |
+| `--export SPDIAG_SHM_PATH=<path>` | `--shm-path` 的兼容写法；只影响当前 CLI 进程 |
+| `--force-remove` | 仅用于 custom namespace 的 `stop/restart`；显式删除无法识别的残留对象 |
 | `--csv [dir]` | 为有表格输出的命令生成 CSV；省略目录时使用 `./results` |
 
 > **CSV 落盘说明**：`--csv [dir]` 可用于 `show`、`watch`、`history` 和三个观测命令，不能用于共享内存管理命令。详见 [CSV 输出](#七csv-落盘输出)。
@@ -47,6 +50,10 @@ spdiag start
 spdiag stop
 ```
 
+默认 namespace 继续直接使用上述命令。custom namespace 先导出精确的
+`SPDIAG_SHM_PATH`；无法确认归属时，普通 `stop` 会拒绝并提示用户确认后执行
+`spdiag stop --force-remove`。
+
 ### restart
 
 重建共享内存（先 stop 再 start）。
@@ -54,6 +61,9 @@ spdiag stop
 ```bash
 spdiag restart
 ```
+
+默认 namespace 不需要环境变量。custom namespace 先导出精确路径并执行 `spdiag restart`；
+无法确认归属时，用户确认后执行 `spdiag restart --force-remove`。
 
 ### status
 
@@ -70,6 +80,44 @@ spdiag status
 ```bash
 spdiag clear
 ```
+
+### 多 SHM 与多用户隔离
+
+`SPDIAG_SHM_PATH` 同时被 CLI 和 SDK 读取。每个用户在启动 SpDiag 与业务前导出不同值，
+即可在同一节点使用独立的 SHM、生命周期锁和持久化数据目录：
+
+```bash
+export SPDIAG_SHM_PATH=/dev/shm/spdiag_user_a
+spdiag start
+./mooncake_service
+spdiag show
+spdiag stop
+```
+
+支持 `NAME`、`/NAME`、`/dev/shm/NAME` 三种输入，内部统一为 POSIX 名称 `/NAME`。
+`NAME` 可以使用 UTF-8，但不能包含 `/`、空白、控制字符或路径穿越片段。
+优先级为 `--shm-path`/`--export`、环境变量、配置文件、默认
+`/spdiag_shm_default`。custom SHM 使用 `0600` 权限；默认 SHM 保留原权限以兼容旧部署。
+custom namespace 的 CLI 与业务进程必须使用同一 UID。
+custom namespace 的 `aggr.bin`、`history.bin`、`snapshot.bin` 默认写入
+`data_dir-uid-<UID>/<NAME>/`。目录权限为 `0700`、文件权限为 `0600`；路径守卫拒绝 symlink
+和非当前 UID 所有的目录，避免跨用户读取、预创建或重定向。
+
+子进程不能修改父 shell 环境，因此：
+
+```bash
+spdiag start --export SPDIAG_SHM_PATH=/dev/shm/spdiag_user_a
+```
+
+只会让本次 `start` 选择该 SHM，并打印提示；启动业务前仍需执行真正的 shell
+`export`。一个业务进程只能连接一个 namespace。SHM 异常残留时，使用相同环境变量或
+`--shm-path` 执行 `status`、`stop`、`restart`；SpDiag 不做通配清理。删除 custom 对象前会
+校验 SpDiag header，无法确认时必须由用户追加 `--force-remove`，防止误删其他软件的 SHM。
+`stop` 后内核会在最后一个映射关闭时释放页，故应先停止对应业务。`start` 使用 backing
+reservation，空间不足会在创建阶段失败，避免后续 mmap 写页触发 `SIGBUS`。
+默认 namespace 保留旧版完整 hash OFD lock 名；custom namespace 使用固定 256 个 hash
+bucket，并按规范化 SHM 名称取锁，owner 与 root 操作同一对象时使用同一把锁。bucket 碰撞
+只会让少量 start/stop 控制操作串行，不会合并 SHM 或数据目录。
 
 ---
 
@@ -424,7 +472,7 @@ per_core_top_n = 100
 
 每核 Top-N 统一保存在运行时分配的 `PerCoreTopNStorage`，K=100 与更大容量共用同一条累计 min-heap 链路。LocalShard 按256 slots估算，K=100、1000、10000时每核约0.669 MiB、2.426 MiB、20.004 MiB；392核单进程约占0.256 GiB、0.929 GiB、7.658 GiB。为把K规模读取移出SHM写窗口，timer还会复用一份全核snapshot scratch，同一上限下约增加0.075 GiB、0.748 GiB、7.477 GiB，进程本地峰值约为0.331 GiB、1.677 GiB、15.135 GiB；实际注册slot少于256时按比例下降。SHM 还取决于实际可用核数和 `maxSlots`，每核每slot只保留一份K值存储。以 `maxSlots=2048` 为例，308个有效核约占1.603 GiB、5.833 GiB、48.131 GiB，392个有效核约占2.039 GiB、7.423 GiB、61.256 GiB。有效核数是硬件并发数、cgroup quota和cpuset的最小值。
 
-上例与仓库的 `config/spdiag.conf.example` 一致，并可容纳至少两个使用标准 256-slot 上限的生产者。若没有配置文件，CLI 结构体默认值为 `maxSlots=1024`、`maxPrograms=8`、`per_core_top_n=100`；SDK 本地分片的编译期上限 `MAX_PERF_SLOTS` 当前为 256，这些字段含义不要混淆。`--config` 和 `--shm` 当前处于禁用状态，不能覆盖默认搜索结果。
+上例与仓库的 `config/spdiag.conf.example` 一致，并可容纳至少两个使用标准 256-slot 上限的生产者。若没有配置文件，CLI 结构体默认值为 `maxSlots=1024`、`maxPrograms=8`、`per_core_top_n=100`；SDK 本地分片的编译期上限 `MAX_PERF_SLOTS` 当前为 256，这些字段含义不要混淆。`--config` 和旧的 `--shm` 仍处于禁用状态；使用 `--shm-path` 或 `SPDIAG_SHM_PATH` 选择 namespace。
 RPM 升级会按 `%config(noreplace)` 保留已有配置；旧配置仍是 `192/1` 时，需要人工调整并重建 SHM，双生产者能力才会生效。
 
 本版动态 SDK 的实体库与 SONAME 分别为 `libspdiag.so.2.0.0` 和 `libspdiag.so.2`。升级后需要重新编译 Mooncake 等动态链接消费者，并停止旧业务、重建 SHM 后再启动新业务；不能把 `libspdiag.so.1` 与 ABI revision 5 的 CLI/SHM 混用。

@@ -13,6 +13,9 @@
 #include <gtest/gtest.h>
 #include "src/manager/dump_recorder.h"
 #include <cstdio>
+#include <filesystem>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static SpDiag::DumpRecord MakeRecord(uint64_t ts) {
     SpDiag::DumpRecord rec;
@@ -79,15 +82,19 @@ TEST(DumpRecorderTest, RingBufferOverflow) {
 }
 
 TEST(DumpRecorderTest, SaveAndLoad) {
-    const std::string tmpPath = "dump_recorder_test_tmp.bin";
+    const std::string directory =
+        (std::filesystem::temp_directory_path() /
+         ("spdiag_history_" + std::to_string(getpid()))).string();
+    const std::string tmpPath = directory + "/history.bin";
+    std::filesystem::remove_all(directory);
 
-    SpDiag::DumpRecorder rec1(5);
+    SpDiag::DumpRecorder rec1(5, true);
     rec1.Record(MakeRecordWithStat(1000));
     rec1.Record(MakeRecordWithStat(2000));
 
     ASSERT_TRUE(rec1.SaveToFile(tmpPath));
 
-    SpDiag::DumpRecorder rec2(5);
+    SpDiag::DumpRecorder rec2(5, true);
     ASSERT_TRUE(rec2.LoadFromFile(tmpPath));
 
     EXPECT_EQ(rec2.Count(), rec1.Count());
@@ -117,7 +124,10 @@ TEST(DumpRecorderTest, SaveAndLoad) {
     EXPECT_EQ(loaded.hasP9999, orig.hasP9999);
 #endif
 
-    std::remove(tmpPath.c_str());
+    struct stat info {};
+    ASSERT_EQ(stat(tmpPath.c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777, 0600);
+    std::filesystem::remove_all(directory);
 }
 
 TEST(DumpRecorderTest, SetCapacity) {
